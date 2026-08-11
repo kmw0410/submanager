@@ -226,6 +226,16 @@ INSERT OR IGNORE INTO notification_rules(id) VALUES(1);
 		{Name: "벅스", Icon: "BG", Category: "음악", BillingCycle: "monthly", Currency: "KRW", Color: "#B2A7D6"},
 		{Name: "멜론", Icon: "ML", Category: "음악", BillingCycle: "monthly", Currency: "KRW", Color: "#A6C99A"},
 		{Name: "FLO", Icon: "FL", Category: "음악", BillingCycle: "monthly", Currency: "KRW", Color: "#AAB5D8"},
+		{Name: "Netflix", Icon: "NF", Category: "영상", BillingCycle: "monthly", Currency: "KRW", Color: "#D99191"},
+		{Name: "TVING", Icon: "TV", Category: "영상", BillingCycle: "monthly", Currency: "KRW", Color: "#D9879B"},
+		{Name: "Wavve", Icon: "WV", Category: "영상", BillingCycle: "monthly", Currency: "KRW", Color: "#829FD1"},
+		{Name: "Disney+", Icon: "D+", Category: "영상", BillingCycle: "monthly", Currency: "KRW", Color: "#879BC8"},
+		{Name: "WATCHA", Icon: "WA", Category: "영상", BillingCycle: "monthly", Currency: "KRW", Color: "#D98DAA"},
+		{Name: "iCloud+", Icon: "iC", Category: "클라우드", BillingCycle: "monthly", Currency: "KRW", Color: "#8CB8D5"},
+		{Name: "Google One", Icon: "G1", Category: "클라우드", BillingCycle: "monthly", Currency: "KRW", Color: "#8EB79D"},
+		{Name: "쿠팡 와우 멤버십", Icon: "CW", Category: "생활", BillingCycle: "monthly", Currency: "KRW", Color: "#A593CE"},
+		{Name: "배민클럽", Icon: "BM", Category: "생활", BillingCycle: "monthly", Currency: "KRW", Color: "#82C6C4"},
+		{Name: "밀리의 서재", Icon: "MI", Category: "독서", BillingCycle: "monthly", Currency: "KRW", Color: "#B4C985"},
 	}
 	for _, s := range services {
 		if _, err := a.db.Exec(`INSERT OR IGNORE INTO services(name,icon,default_category,default_billing_cycle,default_currency,color) VALUES(?,?,?,?,?,?)`, s.Name, s.Icon, s.Category, s.BillingCycle, s.Currency, s.Color); err != nil {
@@ -242,7 +252,7 @@ INSERT OR IGNORE INTO notification_rules(id) VALUES(1);
 			return err
 		}
 	}
-	_, _ = a.db.Exec(`UPDATE services SET supports_trial=1 WHERE name IN ('YouTube Premium','ChatGPT','Claude','Spotify','FLO')`)
+	_, _ = a.db.Exec(`UPDATE services SET supports_trial=1 WHERE name IN ('YouTube Premium','ChatGPT','Claude','Spotify','FLO','밀리의 서재')`)
 	_, err := a.db.Exec(`INSERT INTO subscription_price_history(subscription_id,amount,currency,effective_from) SELECT s.id,s.amount,s.currency,substr(s.started_at,1,10) FROM subscriptions s WHERE NOT EXISTS(SELECT 1 FROM subscription_price_history h WHERE h.subscription_id=s.id)`)
 	if err != nil {
 		return err

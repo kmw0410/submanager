@@ -55,8 +55,25 @@ func TestBuiltinSeedsAreIdempotent(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT COUNT(*) FROM currencies WHERE code IN ('KRW','USD','JPY','EUR','TRY','ARS') AND is_builtin=1`).Scan(&currencies); err != nil {
 		t.Fatal(err)
 	}
-	if services != 8 || methods != 5 || currencies != 6 {
+	if services != 18 || methods != 5 || currencies != 6 {
 		t.Fatalf("services=%d methods=%d currencies=%d", services, methods, currencies)
+	}
+	var category, cycle, currency string
+	var supportsTrial bool
+	if err := a.db.QueryRow(`SELECT default_category,default_billing_cycle,default_currency,supports_trial FROM services WHERE name=?`, "밀리의 서재").Scan(&category, &cycle, &currency, &supportsTrial); err != nil {
+		t.Fatal(err)
+	}
+	if category != "독서" || cycle != "monthly" || currency != "KRW" || !supportsTrial {
+		t.Fatalf("unexpected 밀리의 서재 seed: category=%q cycle=%q currency=%q supportsTrial=%t", category, cycle, currency, supportsTrial)
+	}
+	for _, name := range []string{"Netflix", "iCloud+", "배민클럽", "쿠팡 와우 멤버십", "TVING", "Wavve", "Disney+", "WATCHA", "Google One"} {
+		var count int
+		if err := a.db.QueryRow(`SELECT COUNT(*) FROM services WHERE name=?`, name).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("service %q count=%d", name, count)
+		}
 	}
 }
 
@@ -180,18 +197,33 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	css := string(cssSource)
-	for _, rule := range []string{".main:focus{outline:none}", ".upcoming-row .sub-content{flex:1;text-align:left}", "#addSubscriptionButton{height:39px"} {
+	for _, rule := range []string{".main:focus{outline:none}", ".upcoming-row .sub-content{flex:1;text-align:left}", "#addSubscriptionButton{height:39px", ".skip-status{display:inline-flex", `@media(max-width:620px){.skip-status-mobile{display:inline-flex}}`} {
 		if !strings.Contains(css, rule) {
 			t.Fatalf("missing presentation rule %q", rule)
 		}
+	}
+	if !strings.Contains(js, `s.Skipped?'이번 달 결제 건너뜀'`) || !strings.Contains(js, `s.Skipped?'skip-status':''`) {
+		t.Fatal("skipped subscriptions must show an explicit status badge")
 	}
 
 	htmlSource, err := webFS.ReadFile("web/index.html")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(htmlSource), "<title>SubManager</title>") || strings.Contains(string(htmlSource), "나의 구독 관리") {
+	html := string(htmlSource)
+	if !strings.Contains(html, "<title>SubManager</title>") || strings.Contains(html, "나의 구독 관리") {
 		t.Fatal("page title must contain only SubManager")
+	}
+	if !strings.Contains(html, `href="/assets/app.css"`) || !strings.Contains(html, `src="/assets/app.js"`) || strings.Contains(html, `?v=`) {
+		t.Fatal("dashboard assets must use stable URLs without version query tags")
+	}
+	authSource, err := webFS.ReadFile("web/auth.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := string(authSource)
+	if !strings.Contains(auth, `href="/assets/app.css"`) || strings.Contains(auth, `?v=`) {
+		t.Fatal("authentication assets must use stable URLs without version query tags")
 	}
 }
 

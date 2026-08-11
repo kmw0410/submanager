@@ -1,0 +1,12 @@
+.git
+.agents
+.codex
+data
+submanager
+*.db
+*.db-shm
+*.db-wal
+submanager-backup-*.json
+*.log
+.env
+WORK.md

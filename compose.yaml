@@ -1,0 +1,26 @@
+services:
+  submanager:
+    build:
+      context: .
+      args:
+        GO_VERSION: ${GO_VERSION:-1.24}
+        ALPINE_VERSION: ${ALPINE_VERSION:-3.22}
+    container_name: submanager
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      PORT: "8080"
+      DB_PATH: /data/submanager.db
+      TZ: ${TZ:-Asia/Seoul}
+    volumes:
+      - submanager-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  submanager-data:

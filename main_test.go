@@ -1,0 +1,210 @@
+package main
+
+import (
+	"bytes"
+	"database/sql"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	_ "github.com/mattn/go-sqlite3"
+	"golang.org/x/crypto/bcrypt"
+)
+
+func newTestApplication(t *testing.T) *application {
+	t.Helper()
+	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "submanager.db")+"?_foreign_keys=on")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	loc, _ := time.LoadLocation("Asia/Seoul")
+	a := &application{db: db, location: loc}
+	if err := a.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+func jsonRequest(t *testing.T, method, target string, value any) (*http.Request, *httptest.ResponseRecorder) {
+	t.Helper()
+	body, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return httptest.NewRequest(method, target, bytes.NewReader(body)), httptest.NewRecorder()
+}
+
+func TestBuiltinSeedsAreIdempotent(t *testing.T) {
+	a := newTestApplication(t)
+	if err := a.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	var services, methods, currencies int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM services`).Scan(&services); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM payment_methods WHERE is_builtin=1`).Scan(&methods); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM currencies WHERE code IN ('KRW','USD','JPY','EUR','TRY','ARS') AND is_builtin=1`).Scan(&currencies); err != nil {
+		t.Fatal(err)
+	}
+	if services != 8 || methods != 5 || currencies != 6 {
+		t.Fatalf("services=%d methods=%d currencies=%d", services, methods, currencies)
+	}
+}
+
+func TestFirstAccountIsAdminAndPasswordIsHashed(t *testing.T) {
+	a := newTestApplication(t)
+	r, w := jsonRequest(t, http.MethodPost, "/auth/setup", map[string]string{"name": "관리자", "email": "admin@example.com", "password": "safe-password"})
+	a.setupAccount(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup status=%d body=%s", w.Code, w.Body.String())
+	}
+	var name, email, hash string
+	var admin bool
+	if err := a.db.QueryRow(`SELECT name,email,password_hash,is_admin FROM users WHERE id=1`).Scan(&name, &email, &hash, &admin); err != nil {
+		t.Fatal(err)
+	}
+	if name != "관리자" || email != "admin@example.com" || !admin || hash == "safe-password" {
+		t.Fatal("administrator was not stored securely")
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte("safe-password")); err != nil {
+		t.Fatal(err)
+	}
+	r, w = jsonRequest(t, http.MethodPost, "/auth/setup", map[string]string{"name": "두 번째", "email": "two@example.com", "password": "safe-password"})
+	a.setupAccount(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("second setup status=%d", w.Code)
+	}
+}
+
+func TestPriceHistoryKeepsPastMonthsStable(t *testing.T) {
+	a := newTestApplication(t)
+	var paymentID int64
+	if err := a.db.QueryRow(`SELECT id FROM payment_methods WHERE is_builtin=1 LIMIT 1`).Scan(&paymentID); err != nil {
+		t.Fatal(err)
+	}
+	result, err := a.db.Exec(`INSERT INTO subscriptions(service_name,amount,currency,billing_cycle,billing_day,billing_anchor,payment_method_id,started_at) VALUES('가격 변경',20,'USD','monthly',20,'2026-07-20',?,'2026-07-01')`, paymentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := result.LastInsertId()
+	if _, err = a.db.Exec(`INSERT INTO subscription_price_history(subscription_id,amount,currency,effective_from) VALUES(?,14900,'KRW','2026-07-01'),(?,20,'USD','2026-08-01')`, id, id); err != nil {
+		t.Fatal(err)
+	}
+	july, err := a.monthTotals("2026-07")
+	if err != nil {
+		t.Fatal(err)
+	}
+	august, err := a.monthTotals("2026-08")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if july["KRW"] != 14900 || august["USD"] != 20 {
+		t.Fatalf("july=%v august=%v", july, august)
+	}
+}
+
+func TestJSONExportImportRoundTrip(t *testing.T) {
+	a := newTestApplication(t)
+	if _, err := a.db.Exec(`INSERT INTO currencies(code,name,is_builtin) VALUES('GBP','GBP',0)`); err != nil {
+		t.Fatal(err)
+	}
+	var paymentID int64
+	if err := a.db.QueryRow(`SELECT id FROM payment_methods WHERE is_builtin=1 LIMIT 1`).Scan(&paymentID); err != nil {
+		t.Fatal(err)
+	}
+	result, err := a.db.Exec(`INSERT INTO subscriptions(service_name,amount,currency,billing_cycle,billing_day,billing_anchor,payment_method_id,started_at) VALUES('백업 구독',15,'GBP','monthly',10,'2026-08-10',?,'2026-08-01')`, paymentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := result.LastInsertId()
+	if _, err = a.db.Exec(`INSERT INTO subscription_price_history(subscription_id,amount,currency,effective_from) VALUES(?,15,'GBP','2026-08-01')`, id); err != nil {
+		t.Fatal(err)
+	}
+	exportRecorder := httptest.NewRecorder()
+	a.exportData(exportRecorder, httptest.NewRequest(http.MethodGet, "/api/data/export", nil))
+	if exportRecorder.Code != http.StatusOK {
+		t.Fatalf("export=%d %s", exportRecorder.Code, exportRecorder.Body.String())
+	}
+	if bytes.Contains(exportRecorder.Body.Bytes(), []byte("password_hash")) {
+		t.Fatal("backup exposed password hash")
+	}
+	importRecorder := httptest.NewRecorder()
+	a.importData(importRecorder, httptest.NewRequest(http.MethodPost, "/api/data/import", bytes.NewReader(exportRecorder.Body.Bytes())))
+	if importRecorder.Code != http.StatusOK {
+		t.Fatalf("import=%d %s", importRecorder.Code, importRecorder.Body.String())
+	}
+	var count int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM subscriptions WHERE service_name='백업 구독' AND currency='GBP'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatal("subscription was not restored")
+	}
+}
+
+func TestImportControlUsesStyledLabel(t *testing.T) {
+	source, err := webFS.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	if !strings.Contains(text, `<label class="button import-label">JSON 가져오기<input id="importData" type="file"`) {
+		t.Fatal("import control must use the styled JSON import label")
+	}
+	if strings.Contains(text, `#importData').click()`) {
+		t.Fatal("import label must not depend on a programmatic file picker click")
+	}
+}
+
+func TestDashboardNavigationAndPresentation(t *testing.T) {
+	jsSource, err := webFS.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(jsSource)
+	if !strings.Contains(js, `class="back-button" type="button" data-view="dashboard"`) {
+		t.Fatal("monthly statistics must provide an in-page dashboard back button")
+	}
+
+	cssSource, err := webFS.ReadFile("web/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(cssSource)
+	for _, rule := range []string{".main:focus{outline:none}", ".upcoming-row .sub-content{flex:1;text-align:left}", "#addSubscriptionButton{height:39px"} {
+		if !strings.Contains(css, rule) {
+			t.Fatalf("missing presentation rule %q", rule)
+		}
+	}
+
+	htmlSource, err := webFS.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(htmlSource), "<title>SubManager</title>") || strings.Contains(string(htmlSource), "나의 구독 관리") {
+		t.Fatal("page title must contain only SubManager")
+	}
+}
+
+func TestNotificationTestMessageIncludesExamplePayment(t *testing.T) {
+	message := notificationTestMessage(time.Date(2026, time.August, 11, 0, 0, 0, 0, time.FixedZone("Asia/Seoul", 9*60*60)))
+	for _, want := range []string{"SubManager 알림 테스트", "정기결제 알림 테스트", "1,000원", "2026.08.11 결제 예정이에요."} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("test notification is missing %q: %s", want, message)
+		}
+	}
+	payload := discordWebhookPayload(message)
+	embeds, ok := payload["embeds"].([]map[string]any)
+	if !ok || len(embeds) != 1 || embeds[0]["title"] != "SubManager 알림 테스트" {
+		t.Fatalf("discord test notification must be an embed: %#v", payload)
+	}
+}

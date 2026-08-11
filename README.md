@@ -8,6 +8,12 @@
 docker compose up -d
 ```
 
+GitHub Container Registry에 게시된 이미지는 다음과 같이 받을 수 있습니다.
+
+```bash
+docker pull ghcr.io/kmw0410/submanager:latest
+```
+
 브라우저에서 `http://localhost:8080`에 접속합니다. 포트를 바꾸려면 `PORT=3000 docker compose up -d`처럼 실행하세요. 데이터는 `submanager-data` Docker volume의 `/data/submanager.db`에 저장됩니다.
 
 최초 접속에서는 이름, 이메일, 비밀번호로 관리자 계정을 설정합니다. 최초 관리자 생성 이후에는 추가 가입이 차단되며, 비밀번호는 bcrypt 해시로만 저장됩니다.

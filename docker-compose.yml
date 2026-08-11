@@ -1,10 +1,6 @@
 services:
   submanager:
-    build:
-      context: .
-      args:
-        GO_VERSION: ${GO_VERSION:-1.24}
-        ALPINE_VERSION: ${ALPINE_VERSION:-3.22}
+    image: ghcr.io/kmw0410/submanager:latest
     container_name: submanager
     restart: unless-stopped
     ports:

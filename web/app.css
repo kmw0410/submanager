@@ -68,7 +68,7 @@ button {
   cursor: pointer;
 }
 .topbar {
-  height: 72px;
+  height: 68px;
   border-bottom: 1px solid var(--line);
   display: flex;
   align-items: center;
@@ -106,8 +106,8 @@ button {
 }
 .icon-button,
 .close-button {
-  width: 39px;
-  height: 39px;
+  width: 37px;
+  height: 37px;
   display: grid;
   place-items: center;
   border: 1px solid var(--line);
@@ -129,7 +129,7 @@ button {
   border: 1px solid var(--line-strong);
   background: var(--raised);
   border-radius: 11px;
-  padding: 10px 16px;
+  padding: 8px 16px;
   font-weight: 650;
 }
 .button:hover {
@@ -144,7 +144,7 @@ button {
   background: var(--accent-strong);
 }
 .button.small {
-  padding: 9px 14px;
+  padding: 7px 14px;
 }
 .button.ghost {
   background: transparent;
@@ -163,7 +163,7 @@ button {
   grid-template-columns: 270px minmax(0,1fr);
   max-width: 1540px;
   margin: 0 auto;
-  min-height: calc(100vh - 72px);
+  min-height: calc(100vh - 68px);
 }
 .sidebar {
   padding: 28px 18px 28px 26px;

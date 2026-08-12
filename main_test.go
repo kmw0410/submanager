@@ -626,13 +626,21 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	css := compactSource(string(cssSource))
-	for _, rule := range []string{".main:focus{outline:none", ".upcoming-row .sub-content{flex:1;text-align:left", "#addSubscriptionButton{height:39px", ".skip-status{display:inline-flex", ".sub-card.skipped{opacity:1;border:2px solid", ".list-row.skipped{opacity:1", ".button.skip-action{color:", `@media(max-width:620px){.skip-status-mobile{display:inline-flex`} {
+	for _, rule := range []string{".main:focus{outline:none", ".upcoming-row .sub-content{flex:1;text-align:left", "#addSubscriptionButton{height:39px", ".skip-status{display:inline-flex", ".sub-card.skipped{opacity:1;border:2px solid", ".button.skip-action{color:"} {
 		if !strings.Contains(css, compactSource(rule)) {
 			t.Fatalf("missing presentation rule %q", rule)
 		}
 	}
 	if !strings.Contains(js, `이번 달 결제 건너뜀`) || !strings.Contains(js, `skip-status`) || !strings.Contains(js, `button skip-action`) {
 		t.Fatal("skipped subscriptions must show an explicit status badge")
+	}
+	for _, want := range []string{`const followingPayment = (subscription) =>`, `const rowNextPayment = followingPayment(s);`, `dueText(rowNextPayment)`} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("skipped subscription next-payment presentation is missing %q", want)
+		}
+	}
+	if strings.Contains(css, ".list-row.skipped") || strings.Contains(js, `["list-row", s.Skipped && "skipped"`) {
+		t.Fatal("only dashboard cards should receive the red skipped-payment treatment")
 	}
 
 	htmlSource, err := webFS.ReadFile("web/index.html")

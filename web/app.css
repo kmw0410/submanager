@@ -1159,19 +1159,11 @@ textarea {
   background: #2c1518;
   box-shadow: 0 0 0 1px rgba(215,84,94,.16);
 }
-.list-row.skipped {
-  opacity: 1;
-  background: #291518;
-  box-shadow: inset 4px 0 #e85f69;
-}
-.sub-card.skipped .sub-title,
-.list-row.skipped .service-cell strong {
+.sub-card.skipped .sub-title {
   color: #ffb0b6;
 }
 .sub-card.skipped .sub-title,
-.sub-card.skipped .sub-price,
-.list-row.skipped .service-cell strong,
-.list-row.skipped > span:nth-child(2) strong {
+.sub-card.skipped .sub-price {
   text-decoration: line-through 2px #ef6f78;
   text-decoration-thickness: 2px;
 }
@@ -1190,9 +1182,6 @@ textarea {
 }
 .status-pill.skip-status {
   margin-top: 0;
-}
-.skip-status-mobile {
-  display: none;
 }
 .button.skip-action {
   color: #ffb0b6;
@@ -1371,12 +1360,7 @@ textarea {
   background: #FFF0F1;
   box-shadow: 0 0 0 1px rgba(201,93,102,.12);
 }
-:root[data-theme=light] .list-row.skipped {
-  background: #FFF0F1;
-  box-shadow: inset 4px 0 #C95D66;
-}
-:root[data-theme=light] .sub-card.skipped .sub-title,
-:root[data-theme=light] .list-row.skipped .service-cell strong {
+:root[data-theme=light] .sub-card.skipped .sub-title {
   color: #A53F49;
 }
 :root[data-theme=light] .skip-status {
@@ -1522,11 +1506,6 @@ textarea {
   }
   .edit-actions {
     flex-wrap: wrap;
-  }
-}
-@media (max-width:620px) {
-  .skip-status-mobile {
-    display: inline-flex;
   }
 }
 @media (max-width:850px) {

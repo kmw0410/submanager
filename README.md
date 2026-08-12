@@ -45,12 +45,6 @@ docker compose up -d
 docker pull ghcr.io/kmw0410/submanager:latest
 ```
 
-호스트 포트를 변경할 수 있습니다.
-
-```bash
-PORT=3000 docker compose up -d
-```
-
 애플리케이션 데이터는 `submanager-data` Docker 볼륨의 `/data/submanager.db`에 저장됩니다. 컨테이너를 다시 만들거나 이미지를 업데이트해도 같은 볼륨을 사용하는 한 데이터는 유지됩니다.
 
 ```bash
@@ -62,7 +56,7 @@ docker compose up -d
 
 | 이름 | 기본값 | 설명 |
 |---|---|---|
-| `PORT` | `8080` | HTTP 서버가 수신할 포트입니다. Docker Compose에서는 컨테이너 내부 포트가 `8080`으로 고정되고, 같은 이름의 호스트 환경 변수로 공개 포트를 바꿉니다. |
+| `PORT` | `8080` | HTTP 서버가 수신할 포트입니다. Docker Compose에서는 호스트와 컨테이너 모두 `8080`으로 고정됩니다. |
 | `DB_PATH` | 로컬 `./data/submanager.db`, 이미지 `/data/submanager.db` | SQLite 데이터베이스 파일 경로입니다. 상위 디렉터리는 시작할 때 자동 생성됩니다. |
 | `TZ` | `Asia/Seoul` | 결제일 계산과 예약 알림에 사용하는 시간대입니다. |
 

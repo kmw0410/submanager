@@ -110,6 +110,18 @@
     const n = daysUntil(value);
     return n === 0 ? "오늘" : n === 1 ? "내일" : `${n}일 뒤`;
   };
+  const followingPayment = (subscription) => {
+    const value = subscription.NextPayment;
+    if (!subscription.Skipped || value.slice(0, 7) !== localDate().slice(0, 7)) return value;
+    const [year, month] = value.split("-").map(Number);
+    const yearly = subscription.BillingCycle === "yearly";
+    const targetMonth = yearly ? month : month === 12 ? 1 : month + 1;
+    const targetYear = yearly ? year + 1 : month === 12 ? year + 1 : year;
+    const lastDay = new Date(targetYear, targetMonth, 0).getDate();
+    const day = Math.min(subscription.BillingDay, lastDay);
+    const pad = (number) => String(number).padStart(2, "0");
+    return `${targetYear}-${pad(targetMonth)}-${pad(day)}`;
+  };
 
   function syncSummary() {
     document.querySelector("#activeCount").textContent = `${state.stats.ActiveCount}개`;
@@ -375,29 +387,24 @@
     });
   }
   function subscriptionRow(s) {
-    const classes = ["list-row", s.Skipped && "skipped", s.IsTrial && "trial"]
+    const classes = ["list-row", s.IsTrial && "trial"]
       .filter(Boolean)
       .join(" ");
     const label = s.Skipped ? ` aria-label="${esc(s.ServiceName)}, 이번 달 결제 건너뜀"` : "";
-    const category = s.Skipped
-      ? "이번 달 결제 건너뜀"
-      : s.IsTrial
+    const category = s.IsTrial
       ? "무료 체험 중"
       : esc(s.Category || "기타");
-    const nextPayment = s.Skipped
-      ? "이번 달 결제 건너뜀"
-      : s.IsTrial
+    const rowNextPayment = followingPayment(s);
+    const nextPayment = s.IsTrial
       ? `${s.BillingDate.slice(5).replace("-", ".")}부터 결제`
-      : `${dueText(s.NextPayment)} · ${s.NextPayment.slice(5).replace("-", ".")}`;
+      : `${dueText(rowNextPayment)} · ${rowNextPayment.slice(5).replace("-", ".")}`;
 
     return `
       <button class="${classes}" type="button" data-edit-sub="${s.id}"${label}>
         <span class="service-cell">
           <span>
             <strong>${esc(s.ServiceName)}</strong>
-            <span class="${s.Skipped ? "skip-status skip-status-mobile" : ""}">
-              ${category}
-            </span>
+            <span>${category}</span>
           </span>
         </span>
         <span>
@@ -406,7 +413,7 @@
         </span>
         <span class="muted">${esc(s.PaymentMethodName)}</span>
         <span>
-          <span class="status-pill ${s.Skipped ? "skip-status" : ""}">${nextPayment}</span>
+          <span class="status-pill">${nextPayment}</span>
         </span>
       </button>`;
   }

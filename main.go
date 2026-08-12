@@ -84,7 +84,7 @@ type currencyStat struct {
 }
 
 type appState struct {
-	User     struct{ Name, Currency, Timezone string } `json:"user"`
+	User     struct{ Name, Email, Currency, Timezone string } `json:"user"`
 	Settings struct {
 		NotifyDays                                       int
 		DiscordWebhook, TelegramBotToken, TelegramChatID string
@@ -141,6 +141,8 @@ func main() {
 	mux.HandleFunc("POST /api/subscriptions/{id}/skip", app.requireAuth(app.skipSubscription))
 	mux.HandleFunc("POST /api/subscriptions/{id}/cancel", app.requireAuth(app.cancelSubscription))
 	mux.HandleFunc("PUT /api/settings", app.requireAuth(app.updateSettings))
+	mux.HandleFunc("PUT /api/account/email", app.requireAuth(app.updateAccountEmail))
+	mux.HandleFunc("PUT /api/account/password", app.requireAuth(app.updateAccountPassword))
 	mux.HandleFunc("POST /api/payment-methods", app.requireAuth(app.createPaymentMethod))
 	mux.HandleFunc("PUT /api/payment-methods/{id}", app.requireAuth(app.updatePaymentMethod))
 	mux.HandleFunc("DELETE /api/payment-methods/{id}", app.requireAuth(app.deletePaymentMethod))
@@ -393,15 +395,26 @@ func validateAuth(v authInput, setup bool) error {
 	if setup && (strings.TrimSpace(v.Name) == "" || len([]rune(strings.TrimSpace(v.Name))) > 50) {
 		return errors.New("이름을 확인해 주세요")
 	}
-	v.Email = strings.TrimSpace(strings.ToLower(v.Email))
-	address, err := mail.ParseAddress(v.Email)
-	if err != nil || address.Address != v.Email {
+	if err := validateEmail(v.Email); err != nil {
+		return err
+	}
+	return validatePassword(v.Password)
+}
+
+func validateEmail(email string) error {
+	email = strings.TrimSpace(strings.ToLower(email))
+	address, err := mail.ParseAddress(email)
+	if err != nil || address.Address != email || len(email) > 254 {
 		return errors.New("이메일을 확인해 주세요")
 	}
-	if len(v.Password) < 8 {
+	return nil
+}
+
+func validatePassword(password string) error {
+	if len(password) < 8 {
 		return errors.New("비밀번호는 8자 이상 입력해 주세요")
 	}
-	if len(v.Password) > 72 {
+	if len(password) > 72 {
 		return errors.New("비밀번호는 72자 이하로 입력해 주세요")
 	}
 	return nil
@@ -463,19 +476,31 @@ func (a *application) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *application) createSession(w http.ResponseWriter, r *http.Request, userID int64) error {
+	token, tokenHash, expires, err := newSessionCredentials()
+	if err != nil {
+		return err
+	}
+	_, _ = a.db.Exec(`DELETE FROM sessions WHERE expires_at<=?`, time.Now().UTC().Format(time.RFC3339))
+	if _, err := a.db.Exec(`INSERT INTO sessions(user_id,token_hash,expires_at) VALUES(?,?,?)`, userID, tokenHash, expires.Format(time.RFC3339)); err != nil {
+		return err
+	}
+	setSessionCookie(w, r, token, expires)
+	return nil
+}
+
+func newSessionCredentials() (string, string, time.Time, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
-		return err
+		return "", "", time.Time{}, err
 	}
 	token := hex.EncodeToString(raw)
 	sum := sha256.Sum256([]byte(token))
 	expires := time.Now().UTC().Add(30 * 24 * time.Hour)
-	_, _ = a.db.Exec(`DELETE FROM sessions WHERE expires_at<=?`, time.Now().UTC().Format(time.RFC3339))
-	if _, err := a.db.Exec(`INSERT INTO sessions(user_id,token_hash,expires_at) VALUES(?,?,?)`, userID, hex.EncodeToString(sum[:]), expires.Format(time.RFC3339)); err != nil {
-		return err
-	}
+	return token, hex.EncodeToString(sum[:]), expires, nil
+}
+
+func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expires time.Time) {
 	http.SetCookie(w, &http.Cookie{Name: "submanager_session", Value: token, Path: "/", HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteStrictMode, Expires: expires, MaxAge: 30 * 24 * 60 * 60})
-	return nil
 }
 
 func (a *application) authenticatedUser(r *http.Request) (int64, bool) {
@@ -536,7 +561,7 @@ func (a *application) loadState() (appState, error) {
 	s.Subscriptions = []subscription{}
 	s.Stats.Months = []string{}
 	s.Stats.Currencies = []currencyStat{}
-	if err := a.db.QueryRow(`SELECT u.name,u.currency,u.timezone,n.days_before,c.discord_webhook,c.telegram_bot_token,c.telegram_chat_id,n.notify_upcoming,n.notify_changes,n.notify_monthly FROM users u, notification_rules n, notification_channels c WHERE u.id=1 AND n.id=1 AND c.id=1`).Scan(&s.User.Name, &s.User.Currency, &s.User.Timezone, &s.Settings.NotifyDays, &s.Settings.DiscordWebhook, &s.Settings.TelegramBotToken, &s.Settings.TelegramChatID, &s.Settings.NotifyUpcoming, &s.Settings.NotifyChanges, &s.Settings.NotifyMonthly); err != nil {
+	if err := a.db.QueryRow(`SELECT u.name,u.email,u.currency,u.timezone,n.days_before,c.discord_webhook,c.telegram_bot_token,c.telegram_chat_id,n.notify_upcoming,n.notify_changes,n.notify_monthly FROM users u, notification_rules n, notification_channels c WHERE u.id=1 AND n.id=1 AND c.id=1`).Scan(&s.User.Name, &s.User.Email, &s.User.Currency, &s.User.Timezone, &s.Settings.NotifyDays, &s.Settings.DiscordWebhook, &s.Settings.TelegramBotToken, &s.Settings.TelegramChatID, &s.Settings.NotifyUpcoming, &s.Settings.NotifyChanges, &s.Settings.NotifyMonthly); err != nil {
 		return s, err
 	}
 	rows, err := a.db.Query(`SELECT id,name,icon,default_category,default_billing_cycle,default_currency,color,supports_trial FROM services ORDER BY id`)
@@ -1063,6 +1088,95 @@ func (a *application) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
+
+func (a *application) updateAccountEmail(w http.ResponseWriter, r *http.Request) {
+	userID, ok := a.authenticatedUser(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "로그인이 필요해요"})
+		return
+	}
+	var v struct {
+		Email, CurrentPassword string
+	}
+	if !decode(w, r, &v) || !validOrError(w, validateEmail(v.Email)) {
+		return
+	}
+	var hash string
+	if err := a.db.QueryRow(`SELECT password_hash FROM users WHERE id=?`, userID).Scan(&hash); err != nil {
+		a.fail(w, err)
+		return
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(v.CurrentPassword)) != nil {
+		bad(w, "현재 비밀번호가 맞지 않아요")
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(v.Email))
+	if _, err := a.db.Exec(`UPDATE users SET email=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`, email, userID); err != nil {
+		a.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (a *application) updateAccountPassword(w http.ResponseWriter, r *http.Request) {
+	userID, ok := a.authenticatedUser(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "로그인이 필요해요"})
+		return
+	}
+	var v struct {
+		CurrentPassword, NewPassword string
+	}
+	if !decode(w, r, &v) || !validOrError(w, validatePassword(v.NewPassword)) {
+		return
+	}
+	var currentHash string
+	if err := a.db.QueryRow(`SELECT password_hash FROM users WHERE id=?`, userID).Scan(&currentHash); err != nil {
+		a.fail(w, err)
+		return
+	}
+	if bcrypt.CompareHashAndPassword([]byte(currentHash), []byte(v.CurrentPassword)) != nil {
+		bad(w, "현재 비밀번호가 맞지 않아요")
+		return
+	}
+	if bcrypt.CompareHashAndPassword([]byte(currentHash), []byte(v.NewPassword)) == nil {
+		bad(w, "새 비밀번호는 현재 비밀번호와 다르게 입력해 주세요")
+		return
+	}
+	newHash, err := bcrypt.GenerateFromPassword([]byte(v.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	token, tokenHash, expires, err := newSessionCredentials()
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`UPDATE users SET password_hash=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`, string(newHash), userID); err == nil {
+		_, err = tx.Exec(`DELETE FROM sessions WHERE user_id=?`, userID)
+	}
+	if err == nil {
+		_, err = tx.Exec(`INSERT INTO sessions(user_id,token_hash,expires_at) VALUES(?,?,?)`, userID, tokenHash, expires.Format(time.RFC3339))
+	}
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		a.fail(w, err)
+		return
+	}
+	setSessionCookie(w, r, token, expires)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (a *application) createPaymentMethod(w http.ResponseWriter, r *http.Request) {
 	var v struct{ Name string }
 	if !decode(w, r, &v) {

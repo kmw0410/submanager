@@ -102,6 +102,86 @@ func TestFirstAccountIsAdminAndPasswordIsHashed(t *testing.T) {
 	}
 }
 
+func TestAdministratorCanChangeEmail(t *testing.T) {
+	a := newTestApplication(t)
+	setupRequest, setupRecorder := jsonRequest(t, http.MethodPost, "/auth/setup", map[string]string{"name": "관리자", "email": "admin@example.com", "password": "safe-password"})
+	a.setupAccount(setupRecorder, setupRequest)
+	if setupRecorder.Code != http.StatusCreated || len(setupRecorder.Result().Cookies()) != 1 {
+		t.Fatalf("setup status=%d cookies=%d", setupRecorder.Code, len(setupRecorder.Result().Cookies()))
+	}
+	cookie := setupRecorder.Result().Cookies()[0]
+
+	request, recorder := jsonRequest(t, http.MethodPut, "/api/account/email", map[string]string{"email": "next@example.com", "currentPassword": "wrong-password"})
+	request.AddCookie(cookie)
+	a.updateAccountEmail(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("wrong password status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	request, recorder = jsonRequest(t, http.MethodPut, "/api/account/email", map[string]string{"email": " Next@Example.com ", "currentPassword": "safe-password"})
+	request.AddCookie(cookie)
+	a.updateAccountEmail(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("email update status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var email string
+	if err := a.db.QueryRow(`SELECT email FROM users WHERE id=1`).Scan(&email); err != nil {
+		t.Fatal(err)
+	}
+	if email != "next@example.com" {
+		t.Fatalf("email=%q", email)
+	}
+	state, err := a.loadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.User.Email != email {
+		t.Fatalf("state email=%q", state.User.Email)
+	}
+}
+
+func TestAdministratorCanChangePasswordAndRotateSessions(t *testing.T) {
+	a := newTestApplication(t)
+	setupRequest, setupRecorder := jsonRequest(t, http.MethodPost, "/auth/setup", map[string]string{"name": "관리자", "email": "admin@example.com", "password": "safe-password"})
+	a.setupAccount(setupRecorder, setupRequest)
+	oldCookie := setupRecorder.Result().Cookies()[0]
+
+	request, recorder := jsonRequest(t, http.MethodPut, "/api/account/password", map[string]string{"currentPassword": "safe-password", "newPassword": "new-safe-password"})
+	request.AddCookie(oldCookie)
+	a.updateAccountPassword(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("password update status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(recorder.Result().Cookies()) != 1 {
+		t.Fatalf("new session cookies=%d", len(recorder.Result().Cookies()))
+	}
+	newCookie := recorder.Result().Cookies()[0]
+	oldRequest := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	oldRequest.AddCookie(oldCookie)
+	if _, ok := a.authenticatedUser(oldRequest); ok {
+		t.Fatal("old session remained valid after password change")
+	}
+	newRequest := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	newRequest.AddCookie(newCookie)
+	if _, ok := a.authenticatedUser(newRequest); !ok {
+		t.Fatal("replacement session is not valid")
+	}
+	var hash string
+	var sessions int
+	if err := a.db.QueryRow(`SELECT password_hash FROM users WHERE id=1`).Scan(&hash); err != nil {
+		t.Fatal(err)
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte("new-safe-password")) != nil || bcrypt.CompareHashAndPassword([]byte(hash), []byte("safe-password")) == nil {
+		t.Fatal("password hash was not securely replaced")
+	}
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE user_id=1`).Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 1 {
+		t.Fatalf("sessions=%d", sessions)
+	}
+}
+
 func TestPriceHistoryKeepsPastMonthsStable(t *testing.T) {
 	a := newTestApplication(t)
 	var paymentID int64
@@ -379,6 +459,28 @@ func TestSubscriptionSearchAndCategoryFilters(t *testing.T) {
 	for _, want := range []string{".subscription-tools{display:grid", ".category-filters{display:flex", ".category-filters button[aria-pressed=true]"} {
 		if !strings.Contains(css, want) {
 			t.Fatalf("subscription filter styles are missing %q", want)
+		}
+	}
+}
+
+func TestAccountSettingsControls(t *testing.T) {
+	jsSource, err := webFS.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(jsSource)
+	for _, want := range []string{
+		`data-tab="account">계정`,
+		`id="emailChangeForm"`,
+		`id="passwordChangeForm"`,
+		`autocomplete="current-password"`,
+		`autocomplete="new-password"`,
+		`/api/account/email`,
+		`/api/account/password`,
+		`새 비밀번호 확인이 일치하지 않아요.`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("account settings are missing %q", want)
 		}
 	}
 }

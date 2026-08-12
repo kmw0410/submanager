@@ -9,6 +9,33 @@
   const modalBody = document.querySelector('#modalBody');
   const modalTitle = document.querySelector('#modalTitle');
   const modalKicker = document.querySelector('#modalKicker');
+  const themeButton = document.querySelector('#themeButton');
+  const themeMedia = matchMedia('(prefers-color-scheme: dark)');
+  const themeModes = ['system','dark','light'];
+  const themeLabels = {system:'시스템',dark:'다크',light:'라이트'};
+  const themeIcons = {
+    system:'<svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>',
+    dark:'<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20.4 15.2A8.5 8.5 0 0 1 8.8 3.6 8.5 8.5 0 1 0 20.4 15.2Z"/></svg>',
+    light:'<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"/></svg>'
+  };
+  const uiIcons = {
+    plus:'<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
+    check:'<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>',
+    dot:'<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/></svg>'
+  };
+
+  function applyTheme(preference,persist=false){
+    if(!themeModes.includes(preference))preference='system';
+    const resolved=preference==='system'?(themeMedia.matches?'dark':'light'):preference;
+    document.documentElement.dataset.theme=resolved;
+    document.documentElement.dataset.themePreference=preference;
+    document.querySelector('meta[name="theme-color"]').content=resolved==='dark'?'#09090B':'#F6F7F5';
+    themeButton.innerHTML=themeIcons[preference];
+    const next=themeModes[(themeModes.indexOf(preference)+1)%themeModes.length];
+    themeButton.title=`테마: ${themeLabels[preference]} · 클릭하여 ${themeLabels[next]}로 변경`;
+    themeButton.setAttribute('aria-label',themeButton.title);
+    if(persist){try{preference==='system'?localStorage.removeItem('submanager-theme'):localStorage.setItem('submanager-theme',preference)}catch{}}
+  }
 
   const esc = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   const currencyDigits = currency => state.currencies?.find(c=>c.code===currency)?.digits ?? 2;
@@ -79,7 +106,7 @@
   function subCard(s) {
     return `<button class="sub-card ${s.Skipped?'skipped':''} ${s.IsTrial?'trial':''}" type="button" data-edit-sub="${s.id}"><span class="sub-content"><span class="sub-title">${esc(s.ServiceName)}</span><span class="sub-meta ${s.Skipped?'skip-status':''}">${s.Skipped?'이번 달 결제 건너뜀':s.IsTrial?`무료 체험 · ${s.BillingDate.replaceAll('-','.')}부터 결제`:`${esc(s.Category || '기타')} · ${cycle(s.BillingCycle)}`}</span></span><span class="sub-price">${money(s.amount,s.Currency)}<span>${s.IsTrial?'체험 후 결제':s.NextPayment.replaceAll('-','.')}</span></span></button>`;
   }
-  function empty(title,body){return `<div class="empty"><span class="empty-icon">+</span><strong>${esc(title)}</strong><span>${esc(body)}</span></div>`}
+  function empty(title,body){return `<div class="empty"><span class="empty-icon">${uiIcons.plus}</span><strong>${esc(title)}</strong><span>${esc(body)}</span></div>`}
 
   function renderSubscriptions() {
     const subs=activeSubs();
@@ -94,7 +121,7 @@
 
   function renderStats() {
     const allCurrencies=state.stats.currencies||[];const tabs=currencyTabs();const series=selectedCurrency==='all'?allCurrencies:allCurrencies.filter(c=>c.currency===selectedCurrency);const selected=series[0];const statCards=selectedCurrency==='all'?allCurrencies.map(c=>`<div class="stat"><span>${esc(c.currency)} · 이번 달</span><strong>${money(c.monthTotal,c.currency)}</strong></div>`).join(''):`<div class="stat"><span>이번 달</span><strong>${money(selected?.monthTotal||0,selectedCurrency)}</strong></div><div class="stat"><span>최근 6개월 최고</span><strong>${money(Math.max(...(selected?.monthlyTotals||[0])),selectedCurrency)}</strong></div><div class="stat"><span>최근 6개월 최저</span><strong>${money(Math.min(...(selected?.monthlyTotals||[0])),selectedCurrency)}</strong></div>`;
-    main.innerHTML=`<div class="page"><button class="back-button" type="button" data-view="dashboard" aria-label="대시보드로 돌아가기">← 돌아가기</button><section class="welcome stats-welcome"><h1>월별 지출</h1><p>통화를 섞지 않고 각각의 흐름을 보여드려요.</p></section><div class="section-head"><div><h2>통화별 통계</h2></div>${tabs}</div><div class="stat-grid">${statCards||'<div class="stat"><span>이번 달</span><strong>'+money(0,state.user.Currency)+'</strong></div>'}</div><section class="chart-card"><div class="chart-top"><div><span class="eyebrow">최근 6개월</span><strong class="chart-total">${selectedCurrency==='all'?'통화별 지출 흐름':deltaText(selected)}</strong></div></div>${chart(series,state.stats.months)}</section>${pageHead('구독별 월 예상','연간 구독은 같은 통화의 월평균으로 표시해요.')}<section class="list-card">${activeSubs().sort((a,b)=>a.Currency.localeCompare(b.Currency)||b.amount-a.amount).map(s=>{const monthly=s.BillingCycle==='yearly'?Math.round(s.amount/12):s.amount;const currencyTotal=(state.stats.currencies||[]).find(c=>c.currency===s.Currency)?.monthTotal||0;return `<div class="list-row"><span class="service-cell"><span><strong>${esc(s.ServiceName)}</strong><span>${cycle(s.BillingCycle)}</span></span></span><strong>${money(monthly,s.Currency)}</strong><span class="muted">${esc(s.Category||'기타')}</span><span class="muted">${currencyTotal?Math.round(monthly/currencyTotal*100):0}% · ${esc(s.Currency)}</span></div>`}).join('')||empty('표시할 데이터가 없어요','구독을 추가하면 분석을 시작해요.')}</section></div>`;
+    main.innerHTML=`<div class="page"><button class="back-button" type="button" data-view="dashboard" aria-label="대시보드로 돌아가기"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>돌아가기</button><section class="welcome stats-welcome"><h1>월별 지출</h1><p>통화를 섞지 않고 각각의 흐름을 보여드려요.</p></section><div class="section-head"><div><h2>통화별 통계</h2></div>${tabs}</div><div class="stat-grid">${statCards||'<div class="stat"><span>이번 달</span><strong>'+money(0,state.user.Currency)+'</strong></div>'}</div><section class="chart-card"><div class="chart-top"><div><span class="eyebrow">최근 6개월</span><strong class="chart-total">${selectedCurrency==='all'?'통화별 지출 흐름':deltaText(selected)}</strong></div></div>${chart(series,state.stats.months)}</section>${pageHead('구독별 월 예상','연간 구독은 같은 통화의 월평균으로 표시해요.')}<section class="list-card">${activeSubs().sort((a,b)=>a.Currency.localeCompare(b.Currency)||b.amount-a.amount).map(s=>{const monthly=s.BillingCycle==='yearly'?Math.round(s.amount/12):s.amount;const currencyTotal=(state.stats.currencies||[]).find(c=>c.currency===s.Currency)?.monthTotal||0;return `<div class="list-row"><span class="service-cell"><span><strong>${esc(s.ServiceName)}</strong><span>${cycle(s.BillingCycle)}</span></span></span><strong>${money(monthly,s.Currency)}</strong><span class="muted">${esc(s.Category||'기타')}</span><span class="muted">${currencyTotal?Math.round(monthly/currencyTotal*100):0}% · ${esc(s.Currency)}</span></div>`}).join('')||empty('표시할 데이터가 없어요','구독을 추가하면 분석을 시작해요.')}</section></div>`;
   }
 
   function openModal(title,kicker='') { modalTitle.textContent=title;modalKicker.textContent=kicker;backdrop.hidden=false;document.body.style.overflow='hidden';setTimeout(()=>backdrop.querySelector('input,button,select')?.focus(),0); }
@@ -105,7 +132,7 @@
     modalBody.innerHTML=`<div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg><input id="serviceSearch" type="search" placeholder="서비스 검색" autocomplete="off"></div><div class="service-picker" id="servicePicker">${serviceOptions('')}</div>`;
     const search=document.querySelector('#serviceSearch');search.addEventListener('input',()=>{document.querySelector('#servicePicker').innerHTML=serviceOptions(search.value)});
   }
-  function serviceOptions(query){const q=query.trim().toLowerCase();const list=state.services.filter(s=>s.Name.toLowerCase().includes(q));return `${list.map(s=>`<button class="service-option" type="button" data-service="${s.ID}"><span><strong>${esc(s.Name)}</strong><small>${esc(s.Category)}</small></span></button>`).join('')}<button class="service-option manual-option" type="button" data-service="manual"><span>+</span> 직접 추가</button>`}
+  function serviceOptions(query){const q=query.trim().toLowerCase();const list=state.services.filter(s=>s.Name.toLowerCase().includes(q));return `${list.map(s=>`<button class="service-option" type="button" data-service="${s.ID}"><span><strong>${esc(s.Name)}</strong><small>${esc(s.Category)}</small></span></button>`).join('')}<button class="service-option manual-option" type="button" data-service="manual"><span class="inline-icon">${uiIcons.plus}</span> 직접 추가</button>`}
 
   function openSubForm(service=null, existing=null){
     const edit=!!existing;const s=existing||{ServiceName:service?.Name||'',Icon:service?.Icon||'',Color:service?.Color||'#9AB8A8',Category:service?.Category||'',Currency:service?.Currency||'KRW',BillingCycle:service?.BillingCycle||'monthly',amount:'',BillingDate:localDate(),TrialEndsAt:'',IsTrial:false,PaymentMethodID:visibleMethods()[0]?.id||'',Memo:'',ServiceID:service?Number(service.ID):null};
@@ -143,8 +170,8 @@
     <div class="form-error" id="settingsError"></div><div class="form-actions"><button class="button ghost" type="button" data-close-modal>닫기</button><button class="button primary" type="submit">설정 저장</button></div></form>`;
     bindSettings();
   }
-  function pmRow(p){return `<div class="pm-row" data-pm-row="${p.id}"><span class="pm-check">✓</span><span>${esc(p.name)}</span>${p.IsBuiltin?'<small class="muted">기본</small>':`<span class="inline-actions"><button class="mini-button" type="button" data-rename-pm="${p.id}">이름 변경</button><button class="mini-button danger" type="button" data-delete-pm="${p.id}">삭제</button></span>`}</div>`}
-  function currencyRow(c){return `<div class="pm-row"><span class="pm-check">${c.isBuiltin?'✓':'·'}</span><span><strong>${esc(c.code)}</strong>${c.name&&c.name!==c.code?` <small class="muted">${esc(c.name)}</small>`:''}</span>${c.isBuiltin?'<small class="muted">기본</small>':`<button class="mini-button danger" type="button" data-delete-currency="${c.id}">삭제</button>`}</div>`}
+  function pmRow(p){return `<div class="pm-row" data-pm-row="${p.id}"><span class="pm-check">${uiIcons.check}</span><span>${esc(p.name)}</span>${p.IsBuiltin?'<small class="muted">기본</small>':`<span class="inline-actions"><button class="mini-button" type="button" data-rename-pm="${p.id}">이름 변경</button><button class="mini-button danger" type="button" data-delete-pm="${p.id}">삭제</button></span>`}</div>`}
+  function currencyRow(c){return `<div class="pm-row"><span class="pm-check">${c.isBuiltin?uiIcons.check:uiIcons.dot}</span><span><strong>${esc(c.code)}</strong>${c.name&&c.name!==c.code?` <small class="muted">${esc(c.name)}</small>`:''}</span>${c.isBuiltin?'<small class="muted">기본</small>':`<button class="mini-button danger" type="button" data-delete-currency="${c.id}">삭제</button>`}</div>`}
   function bindSettings(){
     document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('[data-section]').forEach(x=>x.classList.toggle('active',x.dataset.section===b.dataset.tab))}));
     document.querySelector('#settingsForm').addEventListener('submit',async e=>{e.preventDefault();const f=new FormData(e.currentTarget);const body={name:f.get('name'),currency:f.get('currency'),timezone:f.get('timezone'),discordWebhook:f.get('discordWebhook'),telegramBotToken:f.get('telegramBotToken'),telegramChatId:f.get('telegramChatId'),notifyDays:Number(f.get('notifyDays')),notifyUpcoming:f.has('notifyUpcoming'),notifyChanges:f.has('notifyChanges'),notifyMonthly:f.has('notifyMonthly')};try{await api('/api/settings',{method:'PUT',body});closeModal();await refresh();toast('설정을 저장했어요.')}catch(err){document.querySelector('#settingsError').textContent=err.message}});
@@ -174,6 +201,9 @@
   document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!backdrop.hidden)closeModal();if((e.key==='Enter'||e.key===' ')&&e.target.matches('.chart-card[data-view]')){e.preventDefault();render('stats')}});
   backdrop.addEventListener('mousedown',e=>{if(e.target===backdrop)closeModal()});
   document.querySelector('#addSubscriptionButton').addEventListener('click',openServicePicker);
+  themeButton.addEventListener('click',()=>{const current=document.documentElement.dataset.themePreference||'system',next=themeModes[(themeModes.indexOf(current)+1)%themeModes.length];applyTheme(next,true);toast(`${themeLabels[next]} 테마로 전환했어요.`)});
+  themeMedia.addEventListener('change',()=>{if(document.documentElement.dataset.themePreference==='system')applyTheme('system')});
   document.querySelector('#settingsButton').addEventListener('click',openSettings);
+  applyTheme(document.documentElement.dataset.themePreference||'system');
   render();
 })();

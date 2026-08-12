@@ -279,7 +279,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	js := string(jsSource)
-	if !strings.Contains(js, `class="back-button" type="button" data-view="dashboard"`) {
+	if !strings.Contains(js, `class="back-button" type="button" data-view="dashboard"`) || !strings.Contains(js, `<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>돌아가기`) {
 		t.Fatal("monthly statistics must provide an in-page dashboard back button")
 	}
 
@@ -304,6 +304,17 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 	html := string(htmlSource)
 	if !strings.Contains(html, "<title>SubManager</title>") || strings.Contains(html, "나의 구독 관리") {
 		t.Fatal("page title must contain only SubManager")
+	}
+	for _, want := range []string{`id="themeButton"`, `dataset.themePreference=preference`, `submanager-theme`, `prefers-color-scheme: dark`} {
+		if !strings.Contains(html, want) && !strings.Contains(js, want) {
+			t.Fatalf("theme controls must contain %q", want)
+		}
+	}
+	if !strings.Contains(css, `:root[data-theme=light]`) || !strings.Contains(js, `themeMedia.addEventListener('change'`) {
+		t.Fatal("light and system theme behavior must be defined")
+	}
+	if strings.Contains(html, `>×</button>`) || strings.Contains(html, `<span>+</span>`) {
+		t.Fatal("header and modal action icons must use SVG")
 	}
 	if !strings.Contains(html, `href="/assets/app.css"`) || !strings.Contains(html, `src="/assets/app.js"`) || strings.Contains(html, `?v=`) {
 		t.Fatal("dashboard assets must use stable URLs without version query tags")

@@ -11,6 +11,11 @@
   const modalBody = document.querySelector("#modalBody");
   const modalTitle = document.querySelector("#modalTitle");
   const modalKicker = document.querySelector("#modalKicker");
+  const pageRegions = [
+    document.querySelector(".topbar"),
+    document.querySelector(".layout"),
+  ];
+  let modalReturnFocus = null;
   const themeButton = document.querySelector("#themeButton");
   const themeMedia = matchMedia("(prefers-color-scheme: dark)");
   const themeModes = ["system", "dark", "light"];
@@ -581,17 +586,71 @@
   }
 
   function openModal(title, kicker = "") {
+    const opening = backdrop.hidden;
+    if (opening) {
+      modalReturnFocus = document.activeElement;
+      pageRegions.forEach((region) => {
+        region.inert = true;
+      });
+    }
     modalTitle.textContent = title;
     modalKicker.textContent = kicker;
     backdrop.hidden = false;
     document.body.style.overflow = "hidden";
-    setTimeout(() => backdrop.querySelector("input,button,select")?.focus(), 0);
+    setTimeout(() => firstModalControl()?.focus(), 0);
   }
+
   function closeModal() {
     backdrop.hidden = true;
     document.body.style.overflow = "";
     modal.classList.remove("wide");
     modalBody.innerHTML = "";
+    pageRegions.forEach((region) => {
+      region.inert = false;
+    });
+    if (modalReturnFocus?.isConnected) {
+      modalReturnFocus.focus({ preventScroll: true });
+    }
+    modalReturnFocus = null;
+  }
+
+  function modalControls() {
+    const selector = [
+      "button:not([disabled])",
+      "input:not([disabled])",
+      "select:not([disabled])",
+      "textarea:not([disabled])",
+      "a[href]",
+      '[tabindex]:not([tabindex="-1"])',
+    ].join(",");
+    return [...modal.querySelectorAll(selector)].filter((element) =>
+      !element.hidden && element.getClientRects().length > 0
+    );
+  }
+
+  function firstModalControl() {
+    return modalControls()[0] || modal;
+  }
+
+  function trapModalFocus(event) {
+    const controls = modalControls();
+    if (controls.length === 0) {
+      event.preventDefault();
+      modal.focus();
+      return;
+    }
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    if (!modal.contains(document.activeElement)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
 
   function openServicePicker() {
@@ -1414,6 +1473,7 @@
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !backdrop.hidden) closeModal();
+    if (e.key === "Tab" && !backdrop.hidden) trapModalFocus(e);
     if ((e.key === "Enter" || e.key === " ") && e.target.matches(".chart-card[data-view]")) {
       e.preventDefault();
       render("stats");

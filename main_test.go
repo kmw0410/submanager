@@ -554,6 +554,37 @@ func TestTimezoneSettingIsReadOnly(t *testing.T) {
 	}
 }
 
+func TestModalFocusManagement(t *testing.T) {
+	jsSource, err := webFS.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(jsSource)
+	for _, want := range []string{
+		`modalReturnFocus = document.activeElement`,
+		`region.inert = true`,
+		`region.inert = false`,
+		`modalReturnFocus.focus({ preventScroll: true })`,
+		`function trapModalFocus(event)`,
+		`e.key === "Tab" && !backdrop.hidden`,
+		`event.shiftKey && document.activeElement === first`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("modal focus management is missing %q", want)
+		}
+	}
+
+	htmlSource, err := webFS.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(htmlSource)
+	if !strings.Contains(html, `role="dialog" aria-modal="true"`) ||
+		!strings.Contains(html, `aria-labelledby="modalTitle" tabindex="-1"`) {
+		t.Fatal("modal must expose dialog semantics and a fallback focus target")
+	}
+}
+
 func TestNotificationTestMessageIncludesExamplePayment(t *testing.T) {
 	message := notificationTestMessage(time.Date(2026, time.August, 11, 0, 0, 0, 0, time.FixedZone("Asia/Seoul", 9*60*60)))
 	for _, want := range []string{"SubManager 알림 테스트", "정기결제 알림 테스트", "1,000원", "2026.08.11 결제 예정이에요."} {

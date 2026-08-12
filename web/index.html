@@ -7,6 +7,65 @@
   <script>(()=>{let preference='system';try{const saved=localStorage.getItem('submanager-theme');if(saved==='dark'||saved==='light')preference=saved}catch{}const media=matchMedia('(prefers-color-scheme: dark)'),theme=preference==='system'?(media.matches?'dark':'light'):preference;document.documentElement.dataset.theme=theme;document.documentElement.dataset.themePreference=preference;document.querySelector('meta[name="theme-color"]').content=theme==='dark'?'#09090B':'#F6F7F5'})();</script>
   <title>SubManager</title>
   <link rel="stylesheet" href="/assets/app.css">
+  <style>
+    /* Skipped subscriptions use a strong red treatment on dashboard cards. */
+    .sub-card.skipped {
+      border-color: #8c3c43;
+      background: #2c1518;
+      box-shadow: 0 0 0 1px rgba(140,60,67,.22);
+    }
+    .sub-card.skipped:hover {
+      border-color: #a64b54;
+      background: #34191d;
+    }
+    .sub-card.skipped .sub-title,
+    .sub-card.skipped .skip-status {
+      color: #ffb0b6!important;
+    }
+
+    /* The subscription list uses an amber marker instead of the dashboard red card treatment. */
+    .list-row[aria-label*="이번 달 결제 건너뜀"] {
+      position: relative;
+      background: linear-gradient(90deg,rgba(200,155,88,.10),rgba(200,155,88,.025) 42%,transparent 72%);
+      box-shadow: inset 4px 0 0 #c89b58;
+    }
+    .list-row[aria-label*="이번 달 결제 건너뜀"]:hover {
+      background: linear-gradient(90deg,rgba(200,155,88,.16),rgba(200,155,88,.045) 42%,#18181a 76%);
+    }
+    .list-row[aria-label*="이번 달 결제 건너뜀"] .service-cell > span::after {
+      content: "이번 달 건너뜀";
+      display: inline-flex;
+      align-items: center;
+      width: max-content;
+      margin-top: 6px;
+      padding: 3px 7px;
+      border: 1px solid #6e5833;
+      border-radius: 999px;
+      background: #2b2418;
+      color: #f1ca8b;
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1.25;
+    }
+    :root[data-theme=light] .sub-card.skipped {
+      border-color: #D98F94;
+      background: #FFF0F1;
+      box-shadow: 0 0 0 1px rgba(217,143,148,.18);
+    }
+    :root[data-theme=light] .sub-card.skipped .sub-title,
+    :root[data-theme=light] .sub-card.skipped .skip-status {
+      color: #A53F49!important;
+    }
+    :root[data-theme=light] .list-row[aria-label*="이번 달 결제 건너뜀"] {
+      background: linear-gradient(90deg,rgba(181,130,53,.13),rgba(181,130,53,.035) 42%,transparent 72%);
+      box-shadow: inset 4px 0 0 #B58235;
+    }
+    :root[data-theme=light] .list-row[aria-label*="이번 달 결제 건너뜀"] .service-cell > span::after {
+      border-color: #D8B878;
+      background: #FFF5DD;
+      color: #8A5D1D;
+    }
+  </style>
 </head>
 <body>
   <header class="topbar">
@@ -16,7 +75,7 @@
         <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
       </button>
       <button class="icon-button" id="settingsButton" type="button" aria-label="설정 열기" title="설정">
-        <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 15.25A3.25 3.25 0 1 0 12 8.75a3.25 3.25 0 0 0 0 6.5Z"/><path d="M19.4 13.5a7.8 7.8 0 0 0 .05-3l1.35-1.05-1.8-3.1-1.67.68a8 8 0 0 0-2.6-1.5L14.5 3.75h-3.6l-.25 1.78a8 8 0 0 0-2.58 1.5L6.4 6.35l-1.8 3.1 1.35 1.05a7.8 7.8 0 0 0 .05 3l-1.4 1.05 1.8 3.1 1.68-.68a8 8 0 0 0 2.57 1.5l.25 1.78h3.6l.25-1.78a8 8 0 0 0 2.58-1.5l1.67.68 1.8-3.1-1.4-1.05Z"/></svg>
+        <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 15.25A3.25 3.25 0 1 0 12 8.75a3.25 3.25 0 0 0 0 6.5Z"/><path d="M19.4 13.5a7.8 7.8 0 0 0 .05-3l1.35-1.05-1.8-3.1-1.67.68a8 8 0 0 0-2.6-1.5L14.5 3.75h-3.6l-.25 1.78a8 8 0 0 0-2.58 1.5L6.4 6.35l-1.8 3.1 1.35 1.05a7.8 7.8 0 0 0 .05 3l-1.4 1.05 1.8 3.1 1.68-.68a8 8 0 0 0 2.57 1.5l.25 1.78h3.6l.25-1.78a8 8 0 0 0 2.58-1.5l1.67.68 1.8 3.1 1.4-1.05Z"/></svg>
       </button>
       <button class="button primary small" id="addSubscriptionButton" type="button"><svg class="button-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> 구독 추가</button>
     </div>
@@ -46,6 +105,42 @@
   </div>
   <div class="toast-region" id="toasts" aria-live="polite"></div>
   <script>window.__INITIAL_STATE__ = {{.InitialState}};</script>
+  <script>
+    (() => {
+      const aliases = {
+        serviceId: "ServiceID",
+        billingDay: "BillingDay",
+        paymentMethodId: "PaymentMethodID",
+        billingDate: "BillingDate",
+        trialEndsAt: "TrialEndsAt",
+        isTrial: "IsTrial",
+        skipped: "Skipped"
+      };
+      const normalizeState = (data) => {
+        if (!data || !Array.isArray(data.subscriptions)) return data;
+        for (const subscription of data.subscriptions) {
+          for (const [source, target] of Object.entries(aliases)) {
+            if (Object.prototype.hasOwnProperty.call(subscription, source)) {
+              subscription[target] = subscription[source];
+            }
+          }
+        }
+        return data;
+      };
+      normalizeState(window.__INITIAL_STATE__);
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = async (...args) => {
+        const response = await originalFetch(...args);
+        const request = args[0];
+        const url = typeof request === "string" ? request : request?.url || "";
+        if (url === "/api/state" || url.endsWith("/api/state") || url.includes("/api/state?")) {
+          const originalJSON = response.json.bind(response);
+          response.json = async () => normalizeState(await originalJSON());
+        }
+        return response;
+      };
+    })();
+  </script>
   <script src="/assets/app.js" defer></script>
 </body>
 </html>

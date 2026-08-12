@@ -864,8 +864,8 @@
             <select name="currency">${currencyOptions}</select>
           </label>
           <label class="field">
-            <span>Timezone</span>
-            <input name="timezone" value="${esc(state.user.Timezone)}">
+            <span>Timezone · 환경변수 TZ</span>
+            <input value="${esc(state.user.Timezone)}" readonly aria-readonly="true">
           </label>
         </div>
         <div class="edit-actions">
@@ -1139,7 +1139,6 @@
       const body = {
         name: f.get("name"),
         currency: f.get("currency"),
-        timezone: f.get("timezone"),
         discordWebhook: f.get("discordWebhook"),
         telegramBotToken: f.get("telegramBotToken"),
         telegramChatId: f.get("telegramChatId"),

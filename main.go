@@ -717,7 +717,6 @@ func (a *application) loadState() (appState, error) {
 			u.name,
 			u.email,
 			u.currency,
-			u.timezone,
 			n.days_before,
 			c.discord_webhook,
 			c.telegram_bot_token,
@@ -731,7 +730,6 @@ func (a *application) loadState() (appState, error) {
 		&s.User.Name,
 		&s.User.Email,
 		&s.User.Currency,
-		&s.User.Timezone,
 		&s.Settings.NotifyDays,
 		&s.Settings.DiscordWebhook,
 		&s.Settings.TelegramBotToken,
@@ -743,6 +741,7 @@ func (a *application) loadState() (appState, error) {
 	if err != nil {
 		return s, err
 	}
+	s.User.Timezone = a.location.String()
 	rows, err := a.db.Query(`
 		SELECT
 			id,
@@ -1382,9 +1381,9 @@ func (a *application) cancelSubscription(w http.ResponseWriter, r *http.Request)
 
 func (a *application) updateSettings(w http.ResponseWriter, r *http.Request) {
 	var v struct {
-		Name, Currency, Timezone, DiscordWebhook, TelegramBotToken, TelegramChatID string
-		NotifyDays                                                                 int
-		NotifyUpcoming, NotifyChanges, NotifyMonthly                               bool
+		Name, Currency, DiscordWebhook, TelegramBotToken, TelegramChatID string
+		NotifyDays                                                       int
+		NotifyUpcoming, NotifyChanges, NotifyMonthly                     bool
 	}
 	if !decode(w, r, &v) {
 		return
@@ -1414,7 +1413,7 @@ func (a *application) updateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec(`UPDATE users SET name=?,currency=?,timezone=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, v.Name, v.Currency, v.Timezone); err == nil {
+	if _, err = tx.Exec(`UPDATE users SET name=?,currency=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, v.Name, v.Currency); err == nil {
 		_, err = tx.Exec(`UPDATE notification_channels SET discord_webhook=?,telegram_bot_token=?,telegram_chat_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, strings.TrimSpace(v.DiscordWebhook), strings.TrimSpace(v.TelegramBotToken), strings.TrimSpace(v.TelegramChatID))
 	}
 	if err == nil {
@@ -1953,7 +1952,8 @@ func (a *application) exportData(w http.ResponseWriter, _ *http.Request) {
 	var b dataBackup
 	b.Version = 2
 	b.ExportedAt = time.Now().In(a.location).Format(time.RFC3339)
-	err := a.db.QueryRow(`SELECT u.name,u.currency,u.timezone,c.discord_webhook,c.telegram_bot_token,c.telegram_chat_id,n.days_before,n.notify_upcoming,n.notify_changes,n.notify_monthly FROM users u,notification_channels c,notification_rules n WHERE u.id=1 AND c.id=1 AND n.id=1`).Scan(&b.Settings.Name, &b.Settings.Currency, &b.Settings.Timezone, &b.Settings.DiscordWebhook, &b.Settings.TelegramBotToken, &b.Settings.TelegramChatID, &b.Settings.NotifyDays, &b.Settings.NotifyUpcoming, &b.Settings.NotifyChanges, &b.Settings.NotifyMonthly)
+	b.Settings.Timezone = a.location.String()
+	err := a.db.QueryRow(`SELECT u.name,u.currency,c.discord_webhook,c.telegram_bot_token,c.telegram_chat_id,n.days_before,n.notify_upcoming,n.notify_changes,n.notify_monthly FROM users u,notification_channels c,notification_rules n WHERE u.id=1 AND c.id=1 AND n.id=1`).Scan(&b.Settings.Name, &b.Settings.Currency, &b.Settings.DiscordWebhook, &b.Settings.TelegramBotToken, &b.Settings.TelegramChatID, &b.Settings.NotifyDays, &b.Settings.NotifyUpcoming, &b.Settings.NotifyChanges, &b.Settings.NotifyMonthly)
 	if err != nil {
 		a.fail(w, err)
 		return
@@ -2165,7 +2165,7 @@ func (a *application) importData(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if _, err = tx.Exec(`UPDATE users SET name=?,currency=?,timezone=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, b.Settings.Name, b.Settings.Currency, b.Settings.Timezone); err == nil {
+	if _, err = tx.Exec(`UPDATE users SET name=?,currency=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, b.Settings.Name, b.Settings.Currency); err == nil {
 		_, err = tx.Exec(`UPDATE notification_channels SET discord_webhook=?,telegram_bot_token=?,telegram_chat_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, b.Settings.DiscordWebhook, b.Settings.TelegramBotToken, b.Settings.TelegramChatID)
 	}
 	if err == nil {

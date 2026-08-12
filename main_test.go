@@ -186,6 +186,34 @@ func TestAdministratorCanChangePasswordAndRotateSessions(t *testing.T) {
 	}
 }
 
+func TestRuntimeTimezoneComesFromEnvironmentLocation(t *testing.T) {
+	a := newTestApplication(t)
+	if _, err := a.db.Exec(`UPDATE users SET timezone='UTC' WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := a.loadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.User.Timezone != "Asia/Seoul" {
+		t.Fatalf("runtime timezone=%q", state.User.Timezone)
+	}
+
+	recorder := httptest.NewRecorder()
+	a.exportData(recorder, httptest.NewRequest(http.MethodGet, "/api/data/export", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("export status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var backup dataBackup
+	if err := json.Unmarshal(recorder.Body.Bytes(), &backup); err != nil {
+		t.Fatal(err)
+	}
+	if backup.Settings.Timezone != "Asia/Seoul" {
+		t.Fatalf("backup timezone=%q", backup.Settings.Timezone)
+	}
+}
+
 func TestPriceHistoryKeepsPastMonthsStable(t *testing.T) {
 	a := newTestApplication(t)
 	var paymentID int64
@@ -503,6 +531,26 @@ func TestAccountSettingsControls(t *testing.T) {
 		if !strings.Contains(compactJS, compactSource(want)) {
 			t.Fatalf("account settings are missing %q", want)
 		}
+	}
+}
+
+func TestTimezoneSettingIsReadOnly(t *testing.T) {
+	jsSource, err := webFS.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(jsSource)
+	for _, want := range []string{
+		`Timezone · 환경변수 TZ`,
+		`readonly aria-readonly="true"`,
+		`state.user.Timezone`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("runtime timezone control is missing %q", want)
+		}
+	}
+	if strings.Contains(js, `timezone: f.get("timezone")`) {
+		t.Fatal("settings form must not submit a database-backed timezone")
 	}
 }
 

@@ -874,7 +874,8 @@
           </div>
         </div>
       </form>
-      ${accountSettingsTemplate()}`;
+      ${accountSettingsTemplate()}
+      ${sessionSettingsTemplate()}`;
     bindSettings();
   }
 
@@ -882,6 +883,7 @@
     const tabs = [
       ["profile", "기본 설정"],
       ["account", "계정"],
+      ["sessions", "세션 관리"],
       ["payments", "결제수단"],
       ["currencies", "통화"],
       ["notifications", "알림"],
@@ -1160,6 +1162,83 @@
         </div>
       </section>`;
   }
+
+  function sessionSettingsTemplate() {
+    return `
+      <section class="settings-section" data-section="sessions">
+        <div class="session-group">
+          <h3>현재 세션</h3>
+          <div id="currentSession" class="session-list" aria-live="polite">
+            <p class="help">세션 정보를 불러오고 있어요.</p>
+          </div>
+        </div>
+        <div class="session-group">
+          <div class="session-heading">
+            <h3>등록된 세션</h3>
+            <button class="mini-button danger" id="endAllSessions" type="button" hidden>
+              일괄 종료
+            </button>
+          </div>
+          <div id="registeredSessions" class="session-list" aria-live="polite"></div>
+        </div>
+      </section>`;
+  }
+
+  function sessionRow(session, current = false) {
+    const action = current
+      ? '<span class="session-current">현재</span>'
+      : `<button class="mini-button danger" type="button" data-end-session="${session.id}">종료</button>`;
+    return `
+      <div class="session-row">
+        <div class="session-details">
+          <strong>${esc(session.device)}</strong>
+          <small>로그인 ${esc(session.createdAt)} · 만료 ${esc(session.expiresAt)}</small>
+        </div>
+        ${action}
+      </div>`;
+  }
+
+  async function loadSessions() {
+    const current = document.querySelector("#currentSession"),
+      registered = document.querySelector("#registeredSessions"),
+      endAll = document.querySelector("#endAllSessions");
+    if (!current || !registered || !endAll) return;
+    try {
+      const sessions = await api("/api/sessions");
+      current.innerHTML = sessionRow(sessions.current, true);
+      registered.innerHTML = sessions.registered.length
+        ? sessions.registered.map((session) => sessionRow(session)).join("")
+        : '<p class="help session-empty">다른 등록 세션이 없어요.</p>';
+      endAll.hidden = sessions.registered.length === 0;
+      registered.querySelectorAll("[data-end-session]").forEach((button) =>
+        button.addEventListener("click", async () => {
+          if (!confirm("이 세션을 종료할까요? 해당 기기에서 다시 로그인해야 해요.")) return;
+          try {
+            await api(`/api/sessions/${button.dataset.endSession}`, { method: "DELETE" });
+            await loadSessions();
+            toast("등록된 세션을 종료했어요.");
+          } catch (err) {
+            toast(err.message, true);
+          }
+        })
+      );
+      endAll.onclick = async () => {
+        if (!confirm("등록된 세션을 모두 종료할까요? 다른 기기에서 다시 로그인해야 해요.")) return;
+        try {
+          await api("/api/sessions", { method: "DELETE" });
+          await loadSessions();
+          toast("등록된 세션을 모두 종료했어요.");
+        } catch (err) {
+          toast(err.message, true);
+        }
+      };
+    } catch (err) {
+      current.innerHTML = `<p class="form-error">${esc(err.message)}</p>`;
+      registered.innerHTML = "";
+      endAll.hidden = true;
+    }
+  }
+
   function pmRow(p) {
     const actions = p.IsBuiltin ? '<small class="muted">기본</small>' : `
         <span class="inline-actions">
@@ -1201,6 +1280,7 @@
           x.classList.toggle("active", x.dataset.section === b.dataset.tab)
         );
         saveArea.hidden = !tabsUsingSettingsSave.has(b.dataset.tab);
+        if (b.dataset.tab === "sessions") loadSessions();
       })
     );
     document.querySelector("#settingsForm").addEventListener("submit", async (e) => {

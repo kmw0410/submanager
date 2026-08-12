@@ -799,6 +799,52 @@ textarea {
 .mini-button.danger {
   color: #d79595;
 }
+.session-group + .session-group {
+  margin-top: 24px;
+}
+.session-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.session-heading h3 {
+  margin: 0;
+  padding-bottom: 10px;
+}
+.session-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 2px;
+  border-bottom: 1px solid var(--line);
+}
+.session-details {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.session-details strong,
+.session-details small {
+  overflow-wrap: anywhere;
+}
+.session-details small {
+  color: var(--muted);
+}
+.session-current {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: var(--accent);
+  background: rgba(154,184,168,.12);
+  font-size: 12px;
+  font-weight: 700;
+}
+.session-empty {
+  padding: 12px 2px;
+}
 .add-row {
   display: flex;
   gap: 8px;

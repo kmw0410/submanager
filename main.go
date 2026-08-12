@@ -98,6 +98,13 @@ type settingsState struct {
 	NotifyMonthly    bool
 }
 
+type sessionState struct {
+	ID        int64  `json:"id"`
+	Device    string `json:"device"`
+	CreatedAt string `json:"createdAt"`
+	ExpiresAt string `json:"expiresAt"`
+}
+
 type dashboardStats struct {
 	ActiveCount   int
 	UpcomingCount int
@@ -158,6 +165,9 @@ func main() {
 	mux.HandleFunc("PUT /api/settings", app.requireAuth(app.updateSettings))
 	mux.HandleFunc("PUT /api/account/email", app.requireAuth(app.updateAccountEmail))
 	mux.HandleFunc("PUT /api/account/password", app.requireAuth(app.updateAccountPassword))
+	mux.HandleFunc("GET /api/sessions", app.requireAuth(app.listSessions))
+	mux.HandleFunc("DELETE /api/sessions", app.requireAuth(app.deleteOtherSessions))
+	mux.HandleFunc("DELETE /api/sessions/{id}", app.requireAuth(app.deleteSession))
 	mux.HandleFunc("POST /api/payment-methods", app.requireAuth(app.createPaymentMethod))
 	mux.HandleFunc("PUT /api/payment-methods/{id}", app.requireAuth(app.updatePaymentMethod))
 	mux.HandleFunc("DELETE /api/payment-methods/{id}", app.requireAuth(app.deletePaymentMethod))
@@ -344,6 +354,9 @@ INSERT OR IGNORE INTO notification_rules(id) VALUES(1);
 		return err
 	}
 	if err := a.ensureColumn("subscription_occurrences", "currency", "TEXT NOT NULL DEFAULT 'KRW'"); err != nil {
+		return err
+	}
+	if err := a.ensureColumn("sessions", "user_agent", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	columns := []struct {
@@ -629,7 +642,11 @@ func (a *application) createSession(w http.ResponseWriter, r *http.Request, user
 		return err
 	}
 	_, _ = a.db.Exec(`DELETE FROM sessions WHERE expires_at<=?`, time.Now().UTC().Format(time.RFC3339))
-	if _, err := a.db.Exec(`INSERT INTO sessions(user_id,token_hash,expires_at) VALUES(?,?,?)`, userID, tokenHash, expires.Format(time.RFC3339)); err != nil {
+	userAgent := strings.TrimSpace(r.UserAgent())
+	if len(userAgent) > 512 {
+		userAgent = userAgent[:512]
+	}
+	if _, err := a.db.Exec(`INSERT INTO sessions(user_id,token_hash,expires_at,created_at,user_agent) VALUES(?,?,?,?,?)`, userID, tokenHash, expires.Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339), userAgent); err != nil {
 		return err
 	}
 	setSessionCookie(w, r, token, expires)
@@ -652,14 +669,19 @@ func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expi
 }
 
 func (a *application) authenticatedUser(r *http.Request) (int64, bool) {
+	_, userID, ok := a.authenticatedSession(r)
+	return userID, ok
+}
+
+func (a *application) authenticatedSession(r *http.Request) (int64, int64, bool) {
 	c, err := r.Cookie("submanager_session")
 	if err != nil || len(c.Value) != 64 {
-		return 0, false
+		return 0, 0, false
 	}
 	sum := sha256.Sum256([]byte(c.Value))
-	var id int64
-	err = a.db.QueryRow(`SELECT user_id FROM sessions WHERE token_hash=? AND expires_at>?`, hex.EncodeToString(sum[:]), time.Now().UTC().Format(time.RFC3339)).Scan(&id)
-	return id, err == nil
+	var sessionID, userID int64
+	err = a.db.QueryRow(`SELECT id,user_id FROM sessions WHERE token_hash=? AND expires_at>?`, hex.EncodeToString(sum[:]), time.Now().UTC().Format(time.RFC3339)).Scan(&sessionID, &userID)
+	return sessionID, userID, err == nil
 }
 
 func (a *application) requireAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -679,6 +701,125 @@ func (a *application) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, &http.Cookie{Name: "submanager_session", Value: "", Path: "/", HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteStrictMode, MaxAge: -1})
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (a *application) listSessions(w http.ResponseWriter, r *http.Request) {
+	currentID, userID, ok := a.authenticatedSession(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "로그인이 필요해요"})
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, _ = a.db.Exec(`DELETE FROM sessions WHERE expires_at<=?`, now)
+	rows, err := a.db.Query(`SELECT id,user_agent,created_at,expires_at FROM sessions WHERE user_id=? AND expires_at>? ORDER BY created_at DESC,id DESC`, userID, now)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	defer rows.Close()
+	response := struct {
+		Current    sessionState   `json:"current"`
+		Registered []sessionState `json:"registered"`
+	}{Registered: []sessionState{}}
+	for rows.Next() {
+		var session sessionState
+		var userAgent, createdAt, expiresAt string
+		if err := rows.Scan(&session.ID, &userAgent, &createdAt, &expiresAt); err != nil {
+			a.fail(w, err)
+			return
+		}
+		session.Device = sessionDeviceName(userAgent)
+		session.CreatedAt = a.sessionTimeLabel(createdAt)
+		session.ExpiresAt = a.sessionTimeLabel(expiresAt)
+		if session.ID == currentID {
+			response.Current = session
+		} else {
+			response.Registered = append(response.Registered, session)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		a.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (a *application) deleteSession(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	currentID, userID, authenticated := a.authenticatedSession(r)
+	if !authenticated {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "로그인이 필요해요"})
+		return
+	}
+	if id == currentID {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "현재 세션은 여기에서 종료할 수 없어요"})
+		return
+	}
+	res, err := a.db.Exec(`DELETE FROM sessions WHERE id=? AND user_id=?`, id, userID)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	changed(w, res)
+}
+
+func (a *application) deleteOtherSessions(w http.ResponseWriter, r *http.Request) {
+	currentID, userID, ok := a.authenticatedSession(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "로그인이 필요해요"})
+		return
+	}
+	if _, err := a.db.Exec(`DELETE FROM sessions WHERE user_id=? AND id<>?`, userID, currentID); err != nil {
+		a.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func sessionDeviceName(userAgent string) string {
+	if userAgent == "" {
+		return "알 수 없는 기기"
+	}
+	lower := strings.ToLower(userAgent)
+	browser := "브라우저"
+	switch {
+	case strings.Contains(lower, "edg/"):
+		browser = "Microsoft Edge"
+	case strings.Contains(lower, "firefox/"):
+		browser = "Firefox"
+	case strings.Contains(lower, "chrome/") || strings.Contains(lower, "crios/"):
+		browser = "Chrome"
+	case strings.Contains(lower, "safari/"):
+		browser = "Safari"
+	}
+	device := "기기"
+	switch {
+	case strings.Contains(lower, "iphone"):
+		device = "iPhone"
+	case strings.Contains(lower, "ipad"):
+		device = "iPad"
+	case strings.Contains(lower, "android"):
+		device = "Android"
+	case strings.Contains(lower, "windows"):
+		device = "Windows"
+	case strings.Contains(lower, "macintosh") || strings.Contains(lower, "mac os"):
+		device = "Mac"
+	case strings.Contains(lower, "linux"):
+		device = "Linux"
+	}
+	return browser + " · " + device
+}
+
+func (a *application) sessionTimeLabel(value string) string {
+	for _, layout := range []string{time.RFC3339, "2006-01-02 15:04:05"} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed.In(a.location).Format("2006. 01. 02. 15:04")
+		}
+	}
+	return value
 }
 func serveEmbedded(path, contentType string) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
@@ -1500,7 +1641,11 @@ func (a *application) updateAccountPassword(w http.ResponseWriter, r *http.Reque
 		_, err = tx.Exec(`DELETE FROM sessions WHERE user_id=?`, userID)
 	}
 	if err == nil {
-		_, err = tx.Exec(`INSERT INTO sessions(user_id,token_hash,expires_at) VALUES(?,?,?)`, userID, tokenHash, expires.Format(time.RFC3339))
+		userAgent := strings.TrimSpace(r.UserAgent())
+		if len(userAgent) > 512 {
+			userAgent = userAgent[:512]
+		}
+		_, err = tx.Exec(`INSERT INTO sessions(user_id,token_hash,expires_at,created_at,user_agent) VALUES(?,?,?,?,?)`, userID, tokenHash, expires.Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339), userAgent)
 	}
 	if err != nil {
 		a.fail(w, err)

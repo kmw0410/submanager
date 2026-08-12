@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -184,6 +187,98 @@ func TestAdministratorCanChangePasswordAndRotateSessions(t *testing.T) {
 	if sessions != 1 {
 		t.Fatalf("sessions=%d", sessions)
 	}
+}
+
+func TestAdministratorCanManageOtherSessions(t *testing.T) {
+	a := newTestApplication(t)
+	setupRequest, setupRecorder := jsonRequest(t, http.MethodPost, "/auth/setup", map[string]string{"name": "관리자", "email": "admin@example.com", "password": "safe-password"})
+	setupRequest.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0) Chrome/127.0")
+	a.setupAccount(setupRecorder, setupRequest)
+	if setupRecorder.Code != http.StatusCreated {
+		t.Fatalf("setup status=%d body=%s", setupRecorder.Code, setupRecorder.Body.String())
+	}
+	windowsCookie := setupRecorder.Result().Cookies()[0]
+
+	login := func(userAgent string) *http.Cookie {
+		t.Helper()
+		request, recorder := jsonRequest(t, http.MethodPost, "/auth/login", map[string]string{"email": "admin@example.com", "password": "safe-password"})
+		request.Header.Set("User-Agent", userAgent)
+		a.login(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("login status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+		return recorder.Result().Cookies()[0]
+	}
+	currentCookie := login("Mozilla/5.0 (iPhone) Version/17.0 Mobile Safari/604.1")
+	linuxCookie := login("Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0")
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	listRequest.AddCookie(currentCookie)
+	listRecorder := httptest.NewRecorder()
+	a.listSessions(listRecorder, listRequest)
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", listRecorder.Code, listRecorder.Body.String())
+	}
+	var sessions struct {
+		Current    sessionState   `json:"current"`
+		Registered []sessionState `json:"registered"`
+	}
+	if err := json.Unmarshal(listRecorder.Body.Bytes(), &sessions); err != nil {
+		t.Fatal(err)
+	}
+	if sessions.Current.Device != "Safari · iPhone" || len(sessions.Registered) != 2 {
+		t.Fatalf("unexpected sessions: %#v", sessions)
+	}
+
+	deleteCurrent := httptest.NewRequest(http.MethodDelete, "/api/sessions/current", nil)
+	deleteCurrent.SetPathValue("id", strconv.FormatInt(sessions.Current.ID, 10))
+	deleteCurrent.AddCookie(currentCookie)
+	deleteCurrentRecorder := httptest.NewRecorder()
+	a.deleteSession(deleteCurrentRecorder, deleteCurrent)
+	if deleteCurrentRecorder.Code != http.StatusForbidden {
+		t.Fatalf("delete current status=%d body=%s", deleteCurrentRecorder.Code, deleteCurrentRecorder.Body.String())
+	}
+
+	var windowsID int64
+	if err := a.db.QueryRow(`SELECT id FROM sessions WHERE token_hash=?`, sessionTokenHash(windowsCookie.Value)).Scan(&windowsID); err != nil {
+		t.Fatal(err)
+	}
+	deleteRequest := httptest.NewRequest(http.MethodDelete, "/api/sessions/other", nil)
+	deleteRequest.SetPathValue("id", strconv.FormatInt(windowsID, 10))
+	deleteRequest.AddCookie(currentCookie)
+	deleteRecorder := httptest.NewRecorder()
+	a.deleteSession(deleteRecorder, deleteRequest)
+	if deleteRecorder.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", deleteRecorder.Code, deleteRecorder.Body.String())
+	}
+	windowsRequest := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	windowsRequest.AddCookie(windowsCookie)
+	if _, ok := a.authenticatedUser(windowsRequest); ok {
+		t.Fatal("individually ended session remained valid")
+	}
+
+	deleteAllRequest := httptest.NewRequest(http.MethodDelete, "/api/sessions", nil)
+	deleteAllRequest.AddCookie(currentCookie)
+	deleteAllRecorder := httptest.NewRecorder()
+	a.deleteOtherSessions(deleteAllRecorder, deleteAllRequest)
+	if deleteAllRecorder.Code != http.StatusOK {
+		t.Fatalf("delete all status=%d body=%s", deleteAllRecorder.Code, deleteAllRecorder.Body.String())
+	}
+	linuxRequest := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	linuxRequest.AddCookie(linuxCookie)
+	if _, ok := a.authenticatedUser(linuxRequest); ok {
+		t.Fatal("bulk-ended session remained valid")
+	}
+	currentRequest := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	currentRequest.AddCookie(currentCookie)
+	if _, ok := a.authenticatedUser(currentRequest); !ok {
+		t.Fatal("bulk ending other sessions removed the current session")
+	}
+}
+
+func sessionTokenHash(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 func TestRuntimeTimezoneIsExcludedFromStateAndBackup(t *testing.T) {
@@ -649,6 +744,27 @@ func TestAccountSettingsControls(t *testing.T) {
 	} {
 		if !strings.Contains(compactJS, compactSource(want)) {
 			t.Fatalf("account settings are missing %q", want)
+		}
+	}
+}
+
+func TestSessionManagementControls(t *testing.T) {
+	jsSource, err := webFS.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	compactJS := compactSource(string(jsSource))
+	for _, want := range []string{
+		`["sessions", "세션 관리"]`,
+		`<h3>현재 세션</h3>`,
+		`<h3>등록된 세션</h3>`,
+		`id="endAllSessions"`,
+		`data-end-session`,
+		`api("/api/sessions")`,
+		`method: "DELETE"`,
+	} {
+		if !strings.Contains(compactJS, compactSource(want)) {
+			t.Fatalf("session management controls are missing %q", want)
 		}
 	}
 }

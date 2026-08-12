@@ -349,6 +349,40 @@ func TestDashboardResponsiveLayout(t *testing.T) {
 	}
 }
 
+func TestSubscriptionSearchAndCategoryFilters(t *testing.T) {
+	jsSource, err := webFS.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(jsSource)
+	for _, want := range []string{
+		`id="subscriptionSearch" type="search"`,
+		`data-sub-category=`,
+		`aria-label="카테고리 필터"`,
+		`document.addEventListener('input'`,
+		`[s.ServiceName,category,s.PaymentMethodName,s.Memo]`,
+		`renderSubscriptionResults()`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("subscription filtering is missing %q", want)
+		}
+	}
+	if strings.Contains(js, `id="subscriptionSearchButton"`) {
+		t.Fatal("subscription search must update without a search button")
+	}
+
+	cssSource, err := webFS.ReadFile("web/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(cssSource)
+	for _, want := range []string{".subscription-tools{display:grid", ".category-filters{display:flex", ".category-filters button[aria-pressed=true]"} {
+		if !strings.Contains(css, want) {
+			t.Fatalf("subscription filter styles are missing %q", want)
+		}
+	}
+}
+
 func TestNotificationTestMessageIncludesExamplePayment(t *testing.T) {
 	message := notificationTestMessage(time.Date(2026, time.August, 11, 0, 0, 0, 0, time.FixedZone("Asia/Seoul", 9*60*60)))
 	for _, want := range []string{"SubManager 알림 테스트", "정기결제 알림 테스트", "1,000원", "2026.08.11 결제 예정이에요."} {

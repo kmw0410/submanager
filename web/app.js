@@ -3,6 +3,8 @@
   let state = window.__INITIAL_STATE__;
   let currentView = 'dashboard';
   let selectedCurrency = 'all';
+  let subscriptionQuery = '';
+  let subscriptionCategory = '';
   const main = document.querySelector('#main');
   const backdrop = document.querySelector('#modalBackdrop');
   const modal = backdrop.querySelector('.modal');
@@ -110,8 +112,15 @@
 
   function renderSubscriptions() {
     const subs=activeSubs();
-    main.innerHTML=`<div class="page"><section class="welcome"><h1>내 구독</h1><p>지금 이용 중인 서비스를 모아봤어요.</p></section>${pageHead(`활성 구독 ${subs.length}개`,'항목을 누르면 내용을 수정할 수 있어요.')}<section class="list-card">${subs.length?`<div class="list-row list-labels"><span>서비스</span><span>금액 / 주기</span><span>결제수단</span><span>다음 결제</span></div>${subs.map(s=>`<button class="list-row ${s.Skipped?'skipped':''} ${s.IsTrial?'trial':''}" type="button" data-edit-sub="${s.id}"><span class="service-cell"><span><strong>${esc(s.ServiceName)}</strong><span class="${s.Skipped?'skip-status skip-status-mobile':''}">${s.Skipped?'이번 달 결제 건너뜀':s.IsTrial?'무료 체험 중':esc(s.Category||'기타')}</span></span></span><span><strong>${money(s.amount,s.Currency)}</strong><br><small class="muted">${cycle(s.BillingCycle)}</small></span><span class="muted">${esc(s.PaymentMethodName)}</span><span><span class="status-pill ${s.Skipped?'skip-status':''}">${s.Skipped?'이번 달 결제 건너뜀':s.IsTrial?`${s.BillingDate.slice(5).replace('-','.')}부터 결제`:`${dueText(s.NextPayment)} · ${s.NextPayment.slice(5).replace('-','.')}`}</span></span></button>`).join('')}`:empty('현재 구독 중인 항목이 없어요.','구독 추가를 눌러 추가해 보세요.')}</section></div>`;
+    const categories=[...new Set(subs.map(s=>s.Category||'기타'))].sort((a,b)=>a.localeCompare(b,'ko'));
+    if(subscriptionCategory&&!categories.includes(subscriptionCategory))subscriptionCategory='';
+    main.innerHTML=`<div class="page"><section class="welcome"><h1>내 구독</h1><p>지금 이용 중인 서비스를 모아봤어요.</p></section><section class="subscription-tools" aria-label="구독 검색 및 필터"><label class="subscription-search"><span class="sr-only">구독 검색</span><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg><input id="subscriptionSearch" type="search" value="${esc(subscriptionQuery)}" placeholder="서비스, 결제수단, 메모 검색" autocomplete="off"></label><div class="category-filters" role="group" aria-label="카테고리 필터"><button type="button" data-sub-category="" aria-pressed="${subscriptionCategory===''?'true':'false'}">전체</button>${categories.map(category=>`<button type="button" data-sub-category="${esc(category)}" aria-pressed="${subscriptionCategory===category?'true':'false'}">${esc(category)}</button>`).join('')}</div></section><div id="subscriptionHeading"></div><section class="list-card" id="subscriptionResults" aria-live="polite"></section></div>`;
+    renderSubscriptionResults();
   }
+
+  function filteredSubscriptions(){const query=subscriptionQuery.trim().normalize('NFKC').toLocaleLowerCase('ko-KR');return activeSubs().filter(s=>{const category=s.Category||'기타';if(subscriptionCategory&&category!==subscriptionCategory)return false;if(!query)return true;return [s.ServiceName,category,s.PaymentMethodName,s.Memo].some(value=>String(value||'').normalize('NFKC').toLocaleLowerCase('ko-KR').includes(query))})}
+  function subscriptionRow(s){return `<button class="list-row ${s.Skipped?'skipped':''} ${s.IsTrial?'trial':''}" type="button" data-edit-sub="${s.id}"><span class="service-cell"><span><strong>${esc(s.ServiceName)}</strong><span class="${s.Skipped?'skip-status skip-status-mobile':''}">${s.Skipped?'이번 달 결제 건너뜀':s.IsTrial?'무료 체험 중':esc(s.Category||'기타')}</span></span></span><span><strong>${money(s.amount,s.Currency)}</strong><br><small class="muted">${cycle(s.BillingCycle)}</small></span><span class="muted">${esc(s.PaymentMethodName)}</span><span><span class="status-pill ${s.Skipped?'skip-status':''}">${s.Skipped?'이번 달 결제 건너뜀':s.IsTrial?`${s.BillingDate.slice(5).replace('-','.')}부터 결제`:`${dueText(s.NextPayment)} · ${s.NextPayment.slice(5).replace('-','.')}`}</span></span></button>`}
+  function renderSubscriptionResults(){const subs=filteredSubscriptions(),total=activeSubs().length,filtered=subscriptionQuery.trim()||subscriptionCategory;document.querySelector('#subscriptionHeading').innerHTML=pageHead(filtered?`검색 결과 ${subs.length}개`:`활성 구독 ${total}개`,'항목을 누르면 내용을 수정할 수 있어요.');document.querySelector('#subscriptionResults').innerHTML=subs.length?`<div class="list-row list-labels"><span>서비스</span><span>금액 / 주기</span><span>결제수단</span><span>다음 결제</span></div>${subs.map(subscriptionRow).join('')}`:empty(filtered?'검색 결과가 없어요.':'현재 구독 중인 항목이 없어요.',filtered?'검색어나 카테고리를 바꿔 보세요.':'구독 추가를 눌러 추가해 보세요.')}
 
   function renderUpcoming() {
     const subs=activeSubs().filter(s=>!s.Skipped).sort((a,b)=>a.NextPayment.localeCompare(b.NextPayment));
@@ -192,12 +201,14 @@
   function toast(message,error=false){const el=document.createElement('div');el.className=`toast${error?' error':''}`;el.textContent=message;document.querySelector('#toasts').append(el);setTimeout(()=>el.remove(),3200)}
 
   document.addEventListener('click',e=>{
+    const category=e.target.closest('[data-sub-category]');if(category){subscriptionCategory=category.dataset.subCategory;document.querySelectorAll('[data-sub-category]').forEach(button=>button.setAttribute('aria-pressed',String(button===category)));renderSubscriptionResults();return}
     const currency=e.target.closest('[data-currency]');if(currency){e.preventDefault();e.stopPropagation();selectedCurrency=currency.dataset.currency;render(currentView);return}
     const view=e.target.closest('[data-view]');if(view){render(view.dataset.view);return}
     const edit=e.target.closest('[data-edit-sub]');if(edit){const s=state.subscriptions.find(x=>x.id===Number(edit.dataset.editSub));if(s)openSubForm(null,s);return}
     const pick=e.target.closest('[data-service]');if(pick){const s=pick.dataset.service==='manual'?null:state.services.find(x=>String(x.ID)===pick.dataset.service);openSubForm(s);return}
     if(e.target.closest('[data-close-modal]'))closeModal();
   });
+  document.addEventListener('input',e=>{if(e.target.matches('#subscriptionSearch')){subscriptionQuery=e.target.value;renderSubscriptionResults()}});
   document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!backdrop.hidden)closeModal();if((e.key==='Enter'||e.key===' ')&&e.target.matches('.chart-card[data-view]')){e.preventDefault();render('stats')}});
   backdrop.addEventListener('mousedown',e=>{if(e.target===backdrop)closeModal()});
   document.querySelector('#addSubscriptionButton').addEventListener('click',openServicePicker);

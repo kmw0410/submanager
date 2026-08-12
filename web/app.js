@@ -866,10 +866,12 @@
         ${notificationSettingsTemplate()}
         ${channelSettingsTemplate()}
         ${dataSettingsTemplate()}
-        <div class="form-error" id="settingsError"></div>
-        <div class="form-actions">
-          <button class="button ghost" type="button" data-close-modal>닫기</button>
-          <button class="button primary" type="submit">설정 저장</button>
+        <div id="settingsSaveArea">
+          <div class="form-error" id="settingsError"></div>
+          <div class="form-actions">
+            <button class="button ghost" type="button" data-close-modal>닫기</button>
+            <button class="button primary" type="submit">설정 저장</button>
+          </div>
         </div>
       </form>
       ${accountSettingsTemplate()}`;
@@ -921,10 +923,6 @@
           <label class="field">
             <span>기본 통화</span>
             <select name="currency">${currencyOptions}</select>
-          </label>
-          <label class="field">
-            <span>Timezone · 환경변수 TZ</span>
-            <input value="${esc(state.user.Timezone)}" readonly aria-readonly="true">
           </label>
         </div>
         <div class="edit-actions">
@@ -1192,6 +1190,8 @@
       </div>`;
   }
   function bindSettings() {
+    const saveArea = document.querySelector("#settingsSaveArea");
+    const tabsUsingSettingsSave = new Set(["profile", "notifications", "channels"]);
     document.querySelectorAll("[data-tab]").forEach((b) =>
       b.addEventListener("click", () => {
         document.querySelectorAll("[data-tab]").forEach((x) =>
@@ -1200,6 +1200,7 @@
         document.querySelectorAll("[data-section]").forEach((x) =>
           x.classList.toggle("active", x.dataset.section === b.dataset.tab)
         );
+        saveArea.hidden = !tabsUsingSettingsSave.has(b.dataset.tab);
       })
     );
     document.querySelector("#settingsForm").addEventListener("submit", async (e) => {

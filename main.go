@@ -86,7 +86,6 @@ type userState struct {
 	Name     string
 	Email    string
 	Currency string
-	Timezone string
 }
 
 type settingsState struct {
@@ -205,7 +204,6 @@ CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY CHECK(id=1),
     name TEXT NOT NULL DEFAULT '사용자',
     currency TEXT NOT NULL DEFAULT 'KRW',
-    timezone TEXT NOT NULL DEFAULT 'Asia/Seoul',
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -329,7 +327,7 @@ CREATE TABLE IF NOT EXISTS app_metadata (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-INSERT OR IGNORE INTO users(id,name,currency,timezone) VALUES(1,'사용자','KRW','Asia/Seoul');
+INSERT OR IGNORE INTO users(id,name,currency) VALUES(1,'사용자','KRW');
 INSERT OR IGNORE INTO notification_channels(id) VALUES(1);
 INSERT OR IGNORE INTO notification_rules(id) VALUES(1);
 `
@@ -740,7 +738,6 @@ func (a *application) loadState() (appState, error) {
 	if err != nil {
 		return s, err
 	}
-	s.User.Timezone = a.location.String()
 	rows, err := a.db.Query(`
 		SELECT
 			id,

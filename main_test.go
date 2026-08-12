@@ -186,18 +186,19 @@ func TestAdministratorCanChangePasswordAndRotateSessions(t *testing.T) {
 	}
 }
 
-func TestRuntimeTimezoneComesFromEnvironmentLocation(t *testing.T) {
+func TestRuntimeTimezoneIsExcludedFromStateAndBackup(t *testing.T) {
 	a := newTestApplication(t)
-	if _, err := a.db.Exec(`UPDATE users SET timezone='UTC' WHERE id=1`); err != nil {
-		t.Fatal(err)
-	}
 
 	state, err := a.loadState()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.User.Timezone != "Asia/Seoul" {
-		t.Fatalf("runtime timezone=%q", state.User.Timezone)
+	stateJSON, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(string(stateJSON)), "timezone") {
+		t.Fatalf("runtime timezone leaked into application state: %s", stateJSON)
 	}
 
 	recorder := httptest.NewRecorder()
@@ -205,12 +206,26 @@ func TestRuntimeTimezoneComesFromEnvironmentLocation(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("export status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	var backup dataBackup
-	if err := json.Unmarshal(recorder.Body.Bytes(), &backup); err != nil {
+	if strings.Contains(strings.ToLower(recorder.Body.String()), "timezone") {
+		t.Fatalf("runtime timezone leaked into backup: %s", recorder.Body.String())
+	}
+
+	var legacyBackup map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &legacyBackup); err != nil {
 		t.Fatal(err)
 	}
-	if backup.Settings.Timezone != "Asia/Seoul" {
-		t.Fatalf("backup timezone=%q", backup.Settings.Timezone)
+	legacyBackup["settings"].(map[string]any)["timezone"] = "UTC"
+	legacyJSON, err := json.Marshal(legacyBackup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	importRecorder := httptest.NewRecorder()
+	a.importData(importRecorder, httptest.NewRequest(http.MethodPost, "/api/data/import", bytes.NewReader(legacyJSON)))
+	if importRecorder.Code != http.StatusOK {
+		t.Fatalf("legacy timezone backup import status=%d body=%s", importRecorder.Code, importRecorder.Body.String())
+	}
+	if a.location.String() != "Asia/Seoul" {
+		t.Fatalf("backup timezone changed runtime location to %q", a.location)
 	}
 }
 
@@ -629,6 +644,8 @@ func TestAccountSettingsControls(t *testing.T) {
 		`/api/account/email`,
 		`/api/account/password`,
 		`새 비밀번호 확인이 일치하지 않아요.`,
+		`new Set(["profile", "notifications", "channels"])`,
+		`saveArea.hidden = !tabsUsingSettingsSave.has(b.dataset.tab)`,
 	} {
 		if !strings.Contains(compactJS, compactSource(want)) {
 			t.Fatalf("account settings are missing %q", want)
@@ -636,23 +653,16 @@ func TestAccountSettingsControls(t *testing.T) {
 	}
 }
 
-func TestTimezoneSettingIsReadOnly(t *testing.T) {
+func TestTimezoneSettingIsNotRendered(t *testing.T) {
 	jsSource, err := webFS.ReadFile("web/app.js")
 	if err != nil {
 		t.Fatal(err)
 	}
 	js := string(jsSource)
-	for _, want := range []string{
-		`Timezone · 환경변수 TZ`,
-		`readonly aria-readonly="true"`,
-		`state.user.Timezone`,
-	} {
-		if !strings.Contains(js, want) {
-			t.Fatalf("runtime timezone control is missing %q", want)
+	for _, unwanted := range []string{"Timezone", `name="timezone"`, "state.user.Timezone"} {
+		if strings.Contains(js, unwanted) {
+			t.Fatalf("runtime timezone must not appear in settings: %q", unwanted)
 		}
-	}
-	if strings.Contains(js, `timezone: f.get("timezone")`) {
-		t.Fatal("settings form must not submit a database-backed timezone")
 	}
 }
 

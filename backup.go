@@ -12,9 +12,16 @@ type dataBackup struct {
 	ExportedAt                      string `json:"exportedAt"`
 	NotificationCredentialsIncluded bool   `json:"notificationCredentialsIncluded"`
 	Settings                        struct {
-		Name, Currency, Timezone, DiscordWebhook, TelegramBotToken, TelegramChatID string
-		NotifyDays                                                                 int
-		NotifyUpcoming, NotifyChanges, NotifyMonthly                               bool
+		Name             string
+		Currency         string
+		Timezone         string `json:"timezone,omitempty"`
+		DiscordWebhook   string
+		TelegramBotToken string
+		TelegramChatID   string
+		NotifyDays       int
+		NotifyUpcoming   bool
+		NotifyChanges    bool
+		NotifyMonthly    bool
 	} `json:"settings"`
 	PaymentMethods []struct {
 		ID       int64
@@ -60,7 +67,6 @@ func (a *application) exportData(w http.ResponseWriter, r *http.Request) {
 	b.Version = 3
 	b.ExportedAt = time.Now().In(a.location).Format(time.RFC3339)
 	b.NotificationCredentialsIncluded = r.URL.Query().Get("includeNotificationCredentials") == "true"
-	b.Settings.Timezone = a.location.String()
 	err := a.db.QueryRow(`SELECT u.name,u.currency,n.days_before,n.notify_upcoming,n.notify_changes,n.notify_monthly FROM users u,notification_rules n WHERE u.id=1 AND n.id=1`).Scan(
 		&b.Settings.Name,
 		&b.Settings.Currency,

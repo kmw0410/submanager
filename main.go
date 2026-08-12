@@ -83,23 +83,40 @@ type currencyStat struct {
 	MonthlyTotals []int64 `json:"monthlyTotals"`
 }
 
+type userState struct {
+	Name     string
+	Email    string
+	Currency string
+	Timezone string
+}
+
+type settingsState struct {
+	NotifyDays       int
+	DiscordWebhook   string
+	TelegramBotToken string
+	TelegramChatID   string
+	NotifyUpcoming   bool
+	NotifyChanges    bool
+	NotifyMonthly    bool
+}
+
+type dashboardStats struct {
+	ActiveCount   int
+	UpcomingCount int
+	Months        []string       `json:"months"`
+	Currencies    []currencyStat `json:"currencies"`
+	Greeting      string
+	Summary       string
+}
+
 type appState struct {
-	User     struct{ Name, Email, Currency, Timezone string } `json:"user"`
-	Settings struct {
-		NotifyDays                                       int
-		DiscordWebhook, TelegramBotToken, TelegramChatID string
-		NotifyUpcoming, NotifyChanges, NotifyMonthly     bool
-	} `json:"settings"`
+	User           userState        `json:"user"`
+	Settings       settingsState    `json:"settings"`
 	Services       []service        `json:"services"`
 	PaymentMethods []paymentMethod  `json:"paymentMethods"`
 	Currencies     []currencyOption `json:"currencies"`
 	Subscriptions  []subscription   `json:"subscriptions"`
-	Stats          struct {
-		ActiveCount, UpcomingCount int
-		Months                     []string       `json:"months"`
-		Currencies                 []currencyStat `json:"currencies"`
-		Greeting, Summary          string
-	} `json:"stats"`
+	Stats          dashboardStats   `json:"stats"`
 }
 
 func main() {
@@ -151,9 +168,16 @@ func main() {
 	mux.HandleFunc("POST /api/notifications/test", app.requireAuth(app.testNotification))
 	mux.HandleFunc("GET /api/data/export", app.requireAuth(app.exportData))
 	mux.HandleFunc("POST /api/data/import", app.requireAuth(app.importData))
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
 
-	server := &http.Server{Addr: ":" + env("PORT", "8080"), Handler: logging(recoverer(securityHeaders(mux))), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	server := &http.Server{
+		Addr:              ":" + env("PORT", "8080"),
+		Handler:           logging(recoverer(securityHeaders(mux))),
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	go func() {
 		log.Printf("Submanager listening on %s", server.Addr)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -178,22 +202,134 @@ func env(k, fallback string) string {
 
 func (a *application) migrate() error {
 	schema := `
-CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY CHECK(id=1), name TEXT NOT NULL DEFAULT '사용자', currency TEXT NOT NULL DEFAULT 'KRW', timezone TEXT NOT NULL DEFAULT 'Asia/Seoul', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS services (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, icon TEXT NOT NULL, default_category TEXT NOT NULL DEFAULT '', default_billing_cycle TEXT NOT NULL DEFAULT 'monthly', default_currency TEXT NOT NULL DEFAULT 'KRW', color TEXT NOT NULL DEFAULT '#9AB8A8', is_builtin INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS payment_methods (id INTEGER PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE UNIQUE, type TEXT NOT NULL DEFAULT 'custom', is_builtin INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS currencies (id INTEGER PRIMARY KEY, code TEXT NOT NULL COLLATE NOCASE UNIQUE, name TEXT NOT NULL DEFAULT '', is_builtin INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, color TEXT NOT NULL DEFAULT '#9AB8A8');
-CREATE TABLE IF NOT EXISTS subscriptions (id INTEGER PRIMARY KEY, service_id INTEGER REFERENCES services(id), service_name TEXT NOT NULL, icon TEXT NOT NULL DEFAULT 'S', color TEXT NOT NULL DEFAULT '#9AB8A8', amount INTEGER NOT NULL CHECK(amount >= 0), currency TEXT NOT NULL DEFAULT 'KRW', billing_cycle TEXT NOT NULL CHECK(billing_cycle IN ('monthly','yearly')), billing_day INTEGER NOT NULL CHECK(billing_day BETWEEN 1 AND 31), billing_anchor TEXT NOT NULL DEFAULT '', payment_method_id INTEGER NOT NULL REFERENCES payment_methods(id), category TEXT NOT NULL DEFAULT '', memo TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','cancelled')), started_at TEXT NOT NULL DEFAULT CURRENT_DATE, cancelled_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS subscription_occurrences (id INTEGER PRIMARY KEY, subscription_id INTEGER NOT NULL REFERENCES subscriptions(id), period TEXT NOT NULL, scheduled_date TEXT NOT NULL, amount INTEGER NOT NULL, skipped INTEGER NOT NULL DEFAULT 0, paid INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(subscription_id, period));
-CREATE TABLE IF NOT EXISTS subscription_price_history (id INTEGER PRIMARY KEY, subscription_id INTEGER NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE, amount INTEGER NOT NULL CHECK(amount >= 0), currency TEXT NOT NULL, effective_from TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE INDEX IF NOT EXISTS idx_price_history_subscription_date ON subscription_price_history(subscription_id,effective_from,id);
-CREATE TABLE IF NOT EXISTS activity_events (id INTEGER PRIMARY KEY, subscription_id INTEGER REFERENCES subscriptions(id) ON DELETE SET NULL, event_type TEXT NOT NULL, service_name TEXT NOT NULL, old_amount INTEGER, old_currency TEXT, new_amount INTEGER, new_currency TEXT, occurred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE INDEX IF NOT EXISTS idx_activity_events_date ON activity_events(occurred_at,id);
-CREATE TABLE IF NOT EXISTS notification_channels (id INTEGER PRIMARY KEY CHECK(id=1), discord_webhook TEXT NOT NULL DEFAULT '', telegram_bot_token TEXT NOT NULL DEFAULT '', telegram_chat_id TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS notification_rules (id INTEGER PRIMARY KEY CHECK(id=1), notify_upcoming INTEGER NOT NULL DEFAULT 1, notify_changes INTEGER NOT NULL DEFAULT 1, notify_monthly INTEGER NOT NULL DEFAULT 1, days_before INTEGER NOT NULL DEFAULT 3, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS notification_deliveries (id INTEGER PRIMARY KEY, delivery_key TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS app_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    name TEXT NOT NULL DEFAULT '사용자',
+    currency TEXT NOT NULL DEFAULT 'KRW',
+    timezone TEXT NOT NULL DEFAULT 'Asia/Seoul',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS sessions (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS services (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    icon TEXT NOT NULL,
+    default_category TEXT NOT NULL DEFAULT '',
+    default_billing_cycle TEXT NOT NULL DEFAULT 'monthly',
+    default_currency TEXT NOT NULL DEFAULT 'KRW',
+    color TEXT NOT NULL DEFAULT '#9AB8A8',
+    is_builtin INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS payment_methods (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    type TEXT NOT NULL DEFAULT 'custom',
+    is_builtin INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS currencies (
+    id INTEGER PRIMARY KEY,
+    code TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    name TEXT NOT NULL DEFAULT '',
+    is_builtin INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS categories (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    color TEXT NOT NULL DEFAULT '#9AB8A8'
+);
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id INTEGER PRIMARY KEY,
+    service_id INTEGER REFERENCES services(id),
+    service_name TEXT NOT NULL,
+    icon TEXT NOT NULL DEFAULT 'S',
+    color TEXT NOT NULL DEFAULT '#9AB8A8',
+    amount INTEGER NOT NULL CHECK(amount >= 0),
+    currency TEXT NOT NULL DEFAULT 'KRW',
+    billing_cycle TEXT NOT NULL CHECK(billing_cycle IN ('monthly','yearly')),
+    billing_day INTEGER NOT NULL CHECK(billing_day BETWEEN 1 AND 31),
+    billing_anchor TEXT NOT NULL DEFAULT '',
+    payment_method_id INTEGER NOT NULL REFERENCES payment_methods(id),
+    category TEXT NOT NULL DEFAULT '',
+    memo TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','cancelled')),
+    started_at TEXT NOT NULL DEFAULT CURRENT_DATE,
+    cancelled_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS subscription_occurrences (
+    id INTEGER PRIMARY KEY,
+    subscription_id INTEGER NOT NULL REFERENCES subscriptions(id),
+    period TEXT NOT NULL,
+    scheduled_date TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    skipped INTEGER NOT NULL DEFAULT 0,
+    paid INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(subscription_id, period)
+);
+CREATE TABLE IF NOT EXISTS subscription_price_history (
+    id INTEGER PRIMARY KEY,
+    subscription_id INTEGER NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+    amount INTEGER NOT NULL CHECK(amount >= 0),
+    currency TEXT NOT NULL,
+    effective_from TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_price_history_subscription_date
+    ON subscription_price_history(subscription_id,effective_from,id);
+CREATE TABLE IF NOT EXISTS activity_events (
+    id INTEGER PRIMARY KEY,
+    subscription_id INTEGER REFERENCES subscriptions(id) ON DELETE SET NULL,
+    event_type TEXT NOT NULL,
+    service_name TEXT NOT NULL,
+    old_amount INTEGER,
+    old_currency TEXT,
+    new_amount INTEGER,
+    new_currency TEXT,
+    occurred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_activity_events_date
+    ON activity_events(occurred_at,id);
+CREATE TABLE IF NOT EXISTS notification_channels (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    discord_webhook TEXT NOT NULL DEFAULT '',
+    telegram_bot_token TEXT NOT NULL DEFAULT '',
+    telegram_chat_id TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS notification_rules (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    notify_upcoming INTEGER NOT NULL DEFAULT 1,
+    notify_changes INTEGER NOT NULL DEFAULT 1,
+    notify_monthly INTEGER NOT NULL DEFAULT 1,
+    days_before INTEGER NOT NULL DEFAULT 3,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS notification_deliveries (
+    id INTEGER PRIMARY KEY,
+    delivery_key TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS app_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 INSERT OR IGNORE INTO users(id,name,currency,timezone) VALUES(1,'사용자','KRW','Asia/Seoul');
 INSERT OR IGNORE INTO notification_channels(id) VALUES(1);
 INSERT OR IGNORE INTO notification_rules(id) VALUES(1);
@@ -213,11 +349,15 @@ INSERT OR IGNORE INTO notification_rules(id) VALUES(1);
 	if err := a.ensureColumn("subscription_occurrences", "currency", "TEXT NOT NULL DEFAULT 'KRW'"); err != nil {
 		return err
 	}
-	for _, column := range []struct{ name, definition string }{
+	columns := []struct {
+		name       string
+		definition string
+	}{
 		{"email", "TEXT NOT NULL DEFAULT ''"},
 		{"password_hash", "TEXT NOT NULL DEFAULT ''"},
 		{"is_admin", "INTEGER NOT NULL DEFAULT 0"},
-	} {
+	}
+	for _, column := range columns {
 		if err := a.ensureColumn("users", column.name, column.definition); err != nil {
 			return err
 		}
@@ -255,7 +395,18 @@ INSERT OR IGNORE INTO notification_rules(id) VALUES(1);
 			return err
 		}
 	}
-	for _, currency := range []struct{ code, name string }{{"KRW", "대한민국 원"}, {"USD", "미국 달러"}, {"JPY", "일본 엔"}, {"EUR", "유로"}, {"TRY", "튀르키예 리라"}, {"ARS", "아르헨티나 페소"}} {
+	currencies := []struct {
+		code string
+		name string
+	}{
+		{"KRW", "대한민국 원"},
+		{"USD", "미국 달러"},
+		{"JPY", "일본 엔"},
+		{"EUR", "유로"},
+		{"TRY", "튀르키예 리라"},
+		{"ARS", "아르헨티나 페소"},
+	}
+	for _, currency := range currencies {
 		if _, err := a.db.Exec(`INSERT OR IGNORE INTO currencies(code,name,is_builtin) VALUES(?,?,1)`, currency.code, currency.name); err != nil {
 			return err
 		}
@@ -561,17 +712,65 @@ func (a *application) loadState() (appState, error) {
 	s.Subscriptions = []subscription{}
 	s.Stats.Months = []string{}
 	s.Stats.Currencies = []currencyStat{}
-	if err := a.db.QueryRow(`SELECT u.name,u.email,u.currency,u.timezone,n.days_before,c.discord_webhook,c.telegram_bot_token,c.telegram_chat_id,n.notify_upcoming,n.notify_changes,n.notify_monthly FROM users u, notification_rules n, notification_channels c WHERE u.id=1 AND n.id=1 AND c.id=1`).Scan(&s.User.Name, &s.User.Email, &s.User.Currency, &s.User.Timezone, &s.Settings.NotifyDays, &s.Settings.DiscordWebhook, &s.Settings.TelegramBotToken, &s.Settings.TelegramChatID, &s.Settings.NotifyUpcoming, &s.Settings.NotifyChanges, &s.Settings.NotifyMonthly); err != nil {
+	stateQuery := `
+		SELECT
+			u.name,
+			u.email,
+			u.currency,
+			u.timezone,
+			n.days_before,
+			c.discord_webhook,
+			c.telegram_bot_token,
+			c.telegram_chat_id,
+			n.notify_upcoming,
+			n.notify_changes,
+			n.notify_monthly
+		FROM users u, notification_rules n, notification_channels c
+		WHERE u.id=1 AND n.id=1 AND c.id=1`
+	err := a.db.QueryRow(stateQuery).Scan(
+		&s.User.Name,
+		&s.User.Email,
+		&s.User.Currency,
+		&s.User.Timezone,
+		&s.Settings.NotifyDays,
+		&s.Settings.DiscordWebhook,
+		&s.Settings.TelegramBotToken,
+		&s.Settings.TelegramChatID,
+		&s.Settings.NotifyUpcoming,
+		&s.Settings.NotifyChanges,
+		&s.Settings.NotifyMonthly,
+	)
+	if err != nil {
 		return s, err
 	}
-	rows, err := a.db.Query(`SELECT id,name,icon,default_category,default_billing_cycle,default_currency,color,supports_trial FROM services ORDER BY id`)
+	rows, err := a.db.Query(`
+		SELECT
+			id,
+			name,
+			icon,
+			default_category,
+			default_billing_cycle,
+			default_currency,
+			color,
+			supports_trial
+		FROM services
+		ORDER BY id`)
 	if err != nil {
 		return s, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var v service
-		if err := rows.Scan(&v.ID, &v.Name, &v.Icon, &v.Category, &v.BillingCycle, &v.Currency, &v.Color, &v.SupportsTrial); err != nil {
+		if err := rows.Scan(
+			&v.ID,
+			&v.Name,
+			&v.Icon,
+			&v.Category,
+			&v.BillingCycle,
+			&v.Currency,
+			&v.Color,
+			&v.SupportsTrial,
+		); err != nil {
 			return s, err
 		}
 		s.Services = append(s.Services, v)
@@ -739,7 +938,34 @@ func (a *application) latestActivitySummary(now time.Time) (string, bool, error)
 }
 
 func (a *application) loadSubscriptions() ([]subscription, error) {
-	rows, err := a.db.Query(`SELECT s.id,s.service_id,s.service_name,s.icon,s.color,s.amount,s.currency,s.billing_cycle,s.billing_day,s.payment_method_id,p.name,s.category,s.memo,s.status,s.started_at,COALESCE(NULLIF(s.billing_anchor,''),s.started_at),COALESCE(s.cancelled_at,''),COALESCE(s.trial_ends_at,''),COALESCE(o.skipped,0) FROM subscriptions s JOIN payment_methods p ON p.id=s.payment_method_id LEFT JOIN subscription_occurrences o ON o.subscription_id=s.id AND o.period=? ORDER BY s.status,s.billing_day,s.id`, time.Now().In(a.location).Format("2006-01"))
+	query := `
+		SELECT
+			s.id,
+			s.service_id,
+			s.service_name,
+			s.icon,
+			s.color,
+			s.amount,
+			s.currency,
+			s.billing_cycle,
+			s.billing_day,
+			s.payment_method_id,
+			p.name,
+			s.category,
+			s.memo,
+			s.status,
+			s.started_at,
+			COALESCE(NULLIF(s.billing_anchor,''),s.started_at),
+			COALESCE(s.cancelled_at,''),
+			COALESCE(s.trial_ends_at,''),
+			COALESCE(o.skipped,0)
+		FROM subscriptions s
+		JOIN payment_methods p ON p.id=s.payment_method_id
+		LEFT JOIN subscription_occurrences o
+			ON o.subscription_id=s.id AND o.period=?
+		ORDER BY s.status,s.billing_day,s.id`
+	period := time.Now().In(a.location).Format("2006-01")
+	rows, err := a.db.Query(query, period)
 	if err != nil {
 		return nil, err
 	}
@@ -747,13 +973,34 @@ func (a *application) loadSubscriptions() ([]subscription, error) {
 	var out []subscription
 	for rows.Next() {
 		var v subscription
-		if err := rows.Scan(&v.ID, &v.ServiceID, &v.ServiceName, &v.Icon, &v.Color, &v.Amount, &v.Currency, &v.BillingCycle, &v.BillingDay, &v.PaymentMethodID, &v.PaymentMethodName, &v.Category, &v.Memo, &v.Status, &v.CreatedAt, &v.BillingDate, &v.CancelledAt, &v.TrialEndsAt, &v.Skipped); err != nil {
+		if err := rows.Scan(
+			&v.ID,
+			&v.ServiceID,
+			&v.ServiceName,
+			&v.Icon,
+			&v.Color,
+			&v.Amount,
+			&v.Currency,
+			&v.BillingCycle,
+			&v.BillingDay,
+			&v.PaymentMethodID,
+			&v.PaymentMethodName,
+			&v.Category,
+			&v.Memo,
+			&v.Status,
+			&v.CreatedAt,
+			&v.BillingDate,
+			&v.CancelledAt,
+			&v.TrialEndsAt,
+			&v.Skipped,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
 	}
 	return out, rows.Err()
 }
+
 func (a *application) monthTotals(period string) (map[string]int64, error) {
 	y, m, err := parsePeriod(period)
 	if err != nil {
@@ -912,7 +1159,38 @@ func (a *application) createSubscription(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer tx.Rollback()
-	res, err := tx.Exec(`INSERT INTO subscriptions(service_id,service_name,icon,color,amount,currency,billing_cycle,billing_day,billing_anchor,payment_method_id,category,memo,started_at,trial_ends_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, v.ServiceID, strings.TrimSpace(v.ServiceName), v.Icon, v.Color, v.Amount, v.Currency, v.BillingCycle, v.BillingDay, v.BillingDate, v.PaymentMethodID, strings.TrimSpace(v.Category), strings.TrimSpace(v.Memo), startedAt, v.TrialEndsAt)
+	res, err := tx.Exec(
+		`INSERT INTO subscriptions(
+			service_id,
+			service_name,
+			icon,
+			color,
+			amount,
+			currency,
+			billing_cycle,
+			billing_day,
+			billing_anchor,
+			payment_method_id,
+			category,
+			memo,
+			started_at,
+			trial_ends_at
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		v.ServiceID,
+		strings.TrimSpace(v.ServiceName),
+		v.Icon,
+		v.Color,
+		v.Amount,
+		v.Currency,
+		v.BillingCycle,
+		v.BillingDay,
+		v.BillingDate,
+		v.PaymentMethodID,
+		strings.TrimSpace(v.Category),
+		strings.TrimSpace(v.Memo),
+		startedAt,
+		v.TrialEndsAt,
+	)
 	if err != nil {
 		a.fail(w, err)
 		return
@@ -932,6 +1210,7 @@ func (a *application) createSubscription(w http.ResponseWriter, r *http.Request)
 	go a.notifyChange("➕ 구독 추가\n\n" + strings.TrimSpace(v.ServiceName) + "\n" + money(v.Amount, v.Currency))
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
 }
+
 func (a *application) updateSubscription(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
@@ -968,7 +1247,38 @@ func (a *application) updateSubscription(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer tx.Rollback()
-	res, err := tx.Exec(`UPDATE subscriptions SET service_id=?,service_name=?,icon=?,color=?,amount=?,currency=?,billing_cycle=?,billing_day=?,billing_anchor=?,payment_method_id=?,category=?,memo=?,trial_ends_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='active'`, v.ServiceID, strings.TrimSpace(v.ServiceName), v.Icon, v.Color, v.Amount, v.Currency, v.BillingCycle, v.BillingDay, v.BillingDate, v.PaymentMethodID, strings.TrimSpace(v.Category), strings.TrimSpace(v.Memo), v.TrialEndsAt, id)
+	res, err := tx.Exec(
+		`UPDATE subscriptions SET
+			service_id=?,
+			service_name=?,
+			icon=?,
+			color=?,
+			amount=?,
+			currency=?,
+			billing_cycle=?,
+			billing_day=?,
+			billing_anchor=?,
+			payment_method_id=?,
+			category=?,
+			memo=?,
+			trial_ends_at=?,
+			updated_at=CURRENT_TIMESTAMP
+		WHERE id=? AND status='active'`,
+		v.ServiceID,
+		strings.TrimSpace(v.ServiceName),
+		v.Icon,
+		v.Color,
+		v.Amount,
+		v.Currency,
+		v.BillingCycle,
+		v.BillingDay,
+		v.BillingDate,
+		v.PaymentMethodID,
+		strings.TrimSpace(v.Category),
+		strings.TrimSpace(v.Memo),
+		v.TrialEndsAt,
+		id,
+	)
 	if err != nil {
 		a.fail(w, err)
 		return
@@ -991,6 +1301,7 @@ func (a *application) updateSubscription(w http.ResponseWriter, r *http.Request)
 	go a.notifyChange("✏️ 구독 변경\n\n" + strings.TrimSpace(v.ServiceName) + "\n" + money(v.Amount, v.Currency))
 	changed(w, res)
 }
+
 func (a *application) skipSubscription(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
@@ -1010,14 +1321,45 @@ func (a *application) skipSubscription(w http.ResponseWriter, r *http.Request) {
 		notFoundOrFail(a, w, err)
 		return
 	}
-	date := time.Date(now.Year(), now.Month(), min(day, time.Date(now.Year(), now.Month()+1, 0, 0, 0, 0, 0, a.location).Day()), 0, 0, 0, 0, a.location).Format("2006-01-02")
-	_, err := a.db.Exec(`INSERT INTO subscription_occurrences(subscription_id,period,scheduled_date,amount,currency,skipped) VALUES(?,?,?,?,?,?) ON CONFLICT(subscription_id,period) DO UPDATE SET skipped=excluded.skipped,amount=excluded.amount,currency=excluded.currency,updated_at=CURRENT_TIMESTAMP`, id, now.Format("2006-01"), date, amount, currency, v.Skipped)
+	lastDay := time.Date(now.Year(), now.Month()+1, 0, 0, 0, 0, 0, a.location).Day()
+	date := time.Date(
+		now.Year(),
+		now.Month(),
+		min(day, lastDay),
+		0,
+		0,
+		0,
+		0,
+		a.location,
+	).Format("2006-01-02")
+	_, err := a.db.Exec(
+		`INSERT INTO subscription_occurrences(
+			subscription_id,
+			period,
+			scheduled_date,
+			amount,
+			currency,
+			skipped
+		) VALUES(?,?,?,?,?,?)
+		ON CONFLICT(subscription_id,period) DO UPDATE SET
+			skipped=excluded.skipped,
+			amount=excluded.amount,
+			currency=excluded.currency,
+			updated_at=CURRENT_TIMESTAMP`,
+		id,
+		now.Format("2006-01"),
+		date,
+		amount,
+		currency,
+		v.Skipped,
+	)
 	if err != nil {
 		a.fail(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
+
 func (a *application) cancelSubscription(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
@@ -1178,7 +1520,9 @@ func (a *application) updateAccountPassword(w http.ResponseWriter, r *http.Reque
 }
 
 func (a *application) createPaymentMethod(w http.ResponseWriter, r *http.Request) {
-	var v struct{ Name string }
+	var v struct {
+		Name string
+	}
 	if !decode(w, r, &v) {
 		return
 	}
@@ -1204,7 +1548,9 @@ func (a *application) updatePaymentMethod(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	var v struct{ Name string }
+	var v struct {
+		Name string
+	}
 	if !decode(w, r, &v) {
 		return
 	}
@@ -1251,7 +1597,9 @@ func (a *application) deletePaymentMethod(w http.ResponseWriter, r *http.Request
 var currencyCodePattern = regexp.MustCompile(`^[A-Z]{3}$`)
 
 func (a *application) createCurrency(w http.ResponseWriter, r *http.Request) {
-	var v struct{ Code string }
+	var v struct {
+		Code string
+	}
 	if !decode(w, r, &v) {
 		return
 	}
@@ -1758,7 +2106,15 @@ func (a *application) importData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	for _, query := range []string{`DELETE FROM activity_events`, `DELETE FROM subscription_occurrences`, `DELETE FROM subscription_price_history`, `DELETE FROM subscriptions`, `DELETE FROM payment_methods WHERE is_builtin=0`, `DELETE FROM currencies WHERE is_builtin=0`} {
+	deleteQueries := []string{
+		`DELETE FROM activity_events`,
+		`DELETE FROM subscription_occurrences`,
+		`DELETE FROM subscription_price_history`,
+		`DELETE FROM subscriptions`,
+		`DELETE FROM payment_methods WHERE is_builtin=0`,
+		`DELETE FROM currencies WHERE is_builtin=0`,
+	}
+	for _, query := range deleteQueries {
 		if _, err = tx.Exec(query); err != nil {
 			a.fail(w, err)
 			return

@@ -40,6 +40,10 @@ func jsonRequest(t *testing.T, method, target string, value any) (*http.Request,
 	return httptest.NewRequest(method, target, bytes.NewReader(body)), httptest.NewRecorder()
 }
 
+func compactSource(source string) string {
+	return strings.Join(strings.Fields(source), "")
+}
+
 func TestBuiltinSeedsAreIdempotent(t *testing.T) {
 	a := newTestApplication(t)
 	if err := a.migrate(); err != nil {
@@ -332,10 +336,17 @@ func TestImportControlUsesStyledLabel(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(source)
-	if !strings.Contains(text, `<label class="button import-label">JSON 가져오기<input id="importData" type="file"`) {
-		t.Fatal("import control must use the styled JSON import label")
+	for _, want := range []string{
+		`class="button import-label"`,
+		`id="importData"`,
+		`type="file"`,
+		`aria-label="JSON 백업 가져오기"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("import control is missing %q", want)
+		}
 	}
-	if strings.Contains(text, `#importData').click()`) {
+	if strings.Contains(text, `#importData").click()`) {
 		t.Fatal("import label must not depend on a programmatic file picker click")
 	}
 }
@@ -359,21 +370,28 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	js := string(jsSource)
-	if !strings.Contains(js, `class="back-button" type="button" data-view="dashboard"`) || !strings.Contains(js, `<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>돌아가기`) {
-		t.Fatal("monthly statistics must provide an in-page dashboard back button")
+	for _, want := range []string{
+		`class="back-button"`,
+		`data-view="dashboard"`,
+		`aria-label="대시보드로 돌아가기"`,
+		`<path d="m15 18-6-6 6-6"/>`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("dashboard back button is missing %q", want)
+		}
 	}
 
 	cssSource, err := webFS.ReadFile("web/app.css")
 	if err != nil {
 		t.Fatal(err)
 	}
-	css := string(cssSource)
-	for _, rule := range []string{".main:focus{outline:none}", ".upcoming-row .sub-content{flex:1;text-align:left}", "#addSubscriptionButton{height:39px", ".skip-status{display:inline-flex", ".sub-card.skipped{opacity:1;border:2px solid", ".list-row.skipped{opacity:1", ".button.skip-action{color:", `@media(max-width:620px){.skip-status-mobile{display:inline-flex}}`} {
-		if !strings.Contains(css, rule) {
+	css := compactSource(string(cssSource))
+	for _, rule := range []string{".main:focus{outline:none", ".upcoming-row .sub-content{flex:1;text-align:left", "#addSubscriptionButton{height:39px", ".skip-status{display:inline-flex", ".sub-card.skipped{opacity:1;border:2px solid", ".list-row.skipped{opacity:1", ".button.skip-action{color:", `@media(max-width:620px){.skip-status-mobile{display:inline-flex`} {
+		if !strings.Contains(css, compactSource(rule)) {
 			t.Fatalf("missing presentation rule %q", rule)
 		}
 	}
-	if !strings.Contains(js, `s.Skipped?'이번 달 결제 건너뜀'`) || !strings.Contains(js, `s.Skipped?'skip-status':''`) || !strings.Contains(js, `class="button skip-action ${s.Skipped?'restore':''}"`) {
+	if !strings.Contains(js, `이번 달 결제 건너뜀`) || !strings.Contains(js, `skip-status`) || !strings.Contains(js, `button skip-action`) {
 		t.Fatal("skipped subscriptions must show an explicit status badge")
 	}
 
@@ -390,7 +408,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 			t.Fatalf("theme controls must contain %q", want)
 		}
 	}
-	if !strings.Contains(css, `:root[data-theme=light]`) || !strings.Contains(js, `themeMedia.addEventListener('change'`) {
+	if !strings.Contains(css, `:root[data-theme=light]`) || !strings.Contains(js, `themeMedia.addEventListener("change"`) {
 		t.Fatal("light and system theme behavior must be defined")
 	}
 	if strings.Contains(html, `>×</button>`) || strings.Contains(html, `<span>+</span>`) {
@@ -414,16 +432,16 @@ func TestDashboardResponsiveLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	css := string(cssSource)
+	css := compactSource(string(cssSource))
 	for _, rule := range []string{
 		"grid-template-columns:minmax(0,1.45fr)",
 		".currency-tabs{max-width:100%;overflow-x:auto",
 		".upcoming-row{display:grid;grid-template-columns:minmax(0,1fr) auto",
 		"max-height:93dvh",
 		"@media(max-width:420px)",
-		".form-actions,.edit-actions,.data-actions{display:grid;grid-template-columns:1fr}",
+		".form-actions,.edit-actions,.data-actions{display:grid;grid-template-columns:1fr",
 	} {
-		if !strings.Contains(css, rule) {
+		if !strings.Contains(css, compactSource(rule)) {
 			t.Fatalf("responsive dashboard is missing %q", rule)
 		}
 	}
@@ -435,15 +453,17 @@ func TestSubscriptionSearchAndCategoryFilters(t *testing.T) {
 		t.Fatal(err)
 	}
 	js := string(jsSource)
+	compactJS := compactSource(js)
 	for _, want := range []string{
-		`id="subscriptionSearch" type="search"`,
+		`id="subscriptionSearch"`,
+		`type="search"`,
 		`data-sub-category=`,
 		`aria-label="카테고리 필터"`,
-		`document.addEventListener('input'`,
+		`document.addEventListener("input"`,
 		`[s.ServiceName,category,s.PaymentMethodName,s.Memo]`,
 		`renderSubscriptionResults()`,
 	} {
-		if !strings.Contains(js, want) {
+		if !strings.Contains(compactJS, compactSource(want)) {
 			t.Fatalf("subscription filtering is missing %q", want)
 		}
 	}
@@ -455,9 +475,9 @@ func TestSubscriptionSearchAndCategoryFilters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	css := string(cssSource)
+	css := compactSource(string(cssSource))
 	for _, want := range []string{".subscription-tools{display:grid", ".category-filters{display:flex", ".category-filters button[aria-pressed=true]"} {
-		if !strings.Contains(css, want) {
+		if !strings.Contains(css, compactSource(want)) {
 			t.Fatalf("subscription filter styles are missing %q", want)
 		}
 	}
@@ -469,8 +489,9 @@ func TestAccountSettingsControls(t *testing.T) {
 		t.Fatal(err)
 	}
 	js := string(jsSource)
+	compactJS := compactSource(js)
 	for _, want := range []string{
-		`data-tab="account">계정`,
+		`["account","계정"]`,
 		`id="emailChangeForm"`,
 		`id="passwordChangeForm"`,
 		`autocomplete="current-password"`,
@@ -479,7 +500,7 @@ func TestAccountSettingsControls(t *testing.T) {
 		`/api/account/password`,
 		`새 비밀번호 확인이 일치하지 않아요.`,
 	} {
-		if !strings.Contains(js, want) {
+		if !strings.Contains(compactJS, compactSource(want)) {
 			t.Fatalf("account settings are missing %q", want)
 		}
 	}

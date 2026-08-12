@@ -270,7 +270,7 @@ func TestJSONExportImportRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(exportRecorder.Body.Bytes(), &backup); err != nil {
 		t.Fatal(err)
 	}
-	if backup.Version != 2 || len(backup.Subscriptions) != 1 || backup.Subscriptions[0].Amount != 1599 {
+	if backup.Version != 3 || len(backup.Subscriptions) != 1 || backup.Subscriptions[0].Amount != 1599 {
 		t.Fatalf("unexpected backup amount encoding: version=%d subscriptions=%+v", backup.Version, backup.Subscriptions)
 	}
 	importRecorder := httptest.NewRecorder()
@@ -284,6 +284,106 @@ func TestJSONExportImportRoundTrip(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatal("subscription was not restored")
+	}
+}
+
+func TestBackupNotificationCredentialsAreOptional(t *testing.T) {
+	a := newTestApplication(t)
+	const (
+		discordWebhook = "https://discord.example/secret-webhook"
+		telegramToken  = "secret-bot-token"
+		telegramChatID = "secret-chat-id"
+	)
+	if _, err := a.db.Exec(
+		`UPDATE notification_channels SET discord_webhook=?,telegram_bot_token=?,telegram_chat_id=? WHERE id=1`,
+		discordWebhook,
+		telegramToken,
+		telegramChatID,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	excludedRecorder := httptest.NewRecorder()
+	a.exportData(excludedRecorder, httptest.NewRequest(http.MethodGet, "/api/data/export", nil))
+	if excludedRecorder.Code != http.StatusOK {
+		t.Fatalf("excluded export=%d %s", excludedRecorder.Code, excludedRecorder.Body.String())
+	}
+	for _, secret := range []string{discordWebhook, telegramToken, telegramChatID} {
+		if bytes.Contains(excludedRecorder.Body.Bytes(), []byte(secret)) {
+			t.Fatalf("default backup exposed notification credential %q", secret)
+		}
+	}
+	var excludedBackup dataBackup
+	if err := json.Unmarshal(excludedRecorder.Body.Bytes(), &excludedBackup); err != nil {
+		t.Fatal(err)
+	}
+	if excludedBackup.Version != 3 || excludedBackup.NotificationCredentialsIncluded {
+		t.Fatalf("unexpected excluded backup metadata: %+v", excludedBackup)
+	}
+
+	const (
+		preservedWebhook = "https://discord.example/preserved"
+		preservedToken   = "preserved-token"
+		preservedChatID  = "preserved-chat"
+	)
+	if _, err := a.db.Exec(
+		`UPDATE notification_channels SET discord_webhook=?,telegram_bot_token=?,telegram_chat_id=? WHERE id=1`,
+		preservedWebhook,
+		preservedToken,
+		preservedChatID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	excludedImport := httptest.NewRecorder()
+	a.importData(excludedImport, httptest.NewRequest(http.MethodPost, "/api/data/import", bytes.NewReader(excludedRecorder.Body.Bytes())))
+	if excludedImport.Code != http.StatusOK {
+		t.Fatalf("excluded import=%d %s", excludedImport.Code, excludedImport.Body.String())
+	}
+	var currentWebhook, currentToken, currentChatID string
+	if err := a.db.QueryRow(`SELECT discord_webhook,telegram_bot_token,telegram_chat_id FROM notification_channels WHERE id=1`).Scan(
+		&currentWebhook,
+		&currentToken,
+		&currentChatID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if currentWebhook != preservedWebhook || currentToken != preservedToken || currentChatID != preservedChatID {
+		t.Fatalf("excluded import replaced notification credentials: %q %q %q", currentWebhook, currentToken, currentChatID)
+	}
+
+	includedRecorder := httptest.NewRecorder()
+	a.exportData(includedRecorder, httptest.NewRequest(http.MethodGet, "/api/data/export?includeNotificationCredentials=true", nil))
+	if includedRecorder.Code != http.StatusOK {
+		t.Fatalf("included export=%d %s", includedRecorder.Code, includedRecorder.Body.String())
+	}
+	var includedBackup dataBackup
+	if err := json.Unmarshal(includedRecorder.Body.Bytes(), &includedBackup); err != nil {
+		t.Fatal(err)
+	}
+	if !includedBackup.NotificationCredentialsIncluded ||
+		includedBackup.Settings.DiscordWebhook != preservedWebhook ||
+		includedBackup.Settings.TelegramBotToken != preservedToken ||
+		includedBackup.Settings.TelegramChatID != preservedChatID {
+		t.Fatalf("notification credentials were not included: %+v", includedBackup.Settings)
+	}
+	if _, err := a.db.Exec(`UPDATE notification_channels SET discord_webhook='',telegram_bot_token='',telegram_chat_id='' WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	includedImport := httptest.NewRecorder()
+	a.importData(includedImport, httptest.NewRequest(http.MethodPost, "/api/data/import", bytes.NewReader(includedRecorder.Body.Bytes())))
+	if includedImport.Code != http.StatusOK {
+		t.Fatalf("included import=%d %s", includedImport.Code, includedImport.Body.String())
+	}
+	var restoredWebhook, restoredToken, restoredChatID string
+	if err := a.db.QueryRow(`SELECT discord_webhook,telegram_bot_token,telegram_chat_id FROM notification_channels WHERE id=1`).Scan(
+		&restoredWebhook,
+		&restoredToken,
+		&restoredChatID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if restoredWebhook != preservedWebhook || restoredToken != preservedToken || restoredChatID != preservedChatID {
+		t.Fatalf("included import did not restore notification credentials: %q %q %q", restoredWebhook, restoredToken, restoredChatID)
 	}
 }
 
@@ -369,6 +469,8 @@ func TestImportControlUsesStyledLabel(t *testing.T) {
 		`id="importData"`,
 		`type="file"`,
 		`aria-label="JSON 백업 가져오기"`,
+		`id="includeNotificationCredentials"`,
+		`includeNotificationCredentials: String(includeNotificationCredentials)`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("import control is missing %q", want)

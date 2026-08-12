@@ -811,6 +811,23 @@ textarea {
   padding: 10px 0;
   color: var(--muted);
 }
+
+.backup-secret-option {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.backup-secret-option > span:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.backup-secret-option small {
+  color: var(--muted);
+  font-weight: 400;
+}
 .switch {
   position: relative;
   width: 38px;

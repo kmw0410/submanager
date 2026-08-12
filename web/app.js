@@ -1056,8 +1056,18 @@
         <h3>JSON 백업</h3>
         <p class="help">
           구독, 결제수단, 가격 이력과 설정을 JSON 파일로 관리해요.
-          로그인 비밀번호와 세션은 포함하지 않지만 알림 연동 정보는 포함돼요.
+          로그인 비밀번호, 세션과 알림 연동 정보는 기본적으로 포함하지 않아요.
         </p>
+        <label class="check-row backup-secret-option">
+          <span>
+            <strong>알림 연동 정보 포함</strong>
+            <small>Discord Webhook, Telegram Bot Token과 Chat ID를 백업에 저장해요.</small>
+          </span>
+          <span class="switch">
+            <input id="includeNotificationCredentials" type="checkbox">
+            <span></span>
+          </span>
+        </label>
         <div class="data-actions">
           <button class="button" type="button" id="exportData">JSON 내보내기</button>
           <label class="button import-label">
@@ -1351,16 +1361,25 @@
     });
     document.querySelector("#exportData").addEventListener("click", async () => {
       try {
-        const res = await fetch("/api/data/export");
+        const includeNotificationCredentials = document.querySelector(
+          "#includeNotificationCredentials",
+        ).checked;
+        const query = new URLSearchParams({
+          includeNotificationCredentials: String(includeNotificationCredentials),
+        });
+        const res = await fetch(`/api/data/export?${query}`);
         if (!res.ok) throw new Error("백업을 만들지 못했어요.");
-        const blob = await res.blob(),
-          url = URL.createObjectURL(blob),
-          a = document.createElement("a");
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
         a.href = url;
         a.download = `submanager-backup-${localDate()}.json`;
         a.click();
         URL.revokeObjectURL(url);
-        toast("JSON 백업을 만들었어요.");
+        const detail = includeNotificationCredentials
+          ? "알림 연동 정보 포함"
+          : "알림 연동 정보 제외";
+        toast(`JSON 백업을 만들었어요. (${detail})`);
       } catch (err) {
         toast(err.message, true);
       }

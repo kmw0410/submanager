@@ -8,9 +8,10 @@ import (
 )
 
 type dataBackup struct {
-	Version    int    `json:"version"`
-	ExportedAt string `json:"exportedAt"`
-	Settings   struct {
+	Version                         int    `json:"version"`
+	ExportedAt                      string `json:"exportedAt"`
+	NotificationCredentialsIncluded bool   `json:"notificationCredentialsIncluded"`
+	Settings                        struct {
 		Name, Currency, Timezone, DiscordWebhook, TelegramBotToken, TelegramChatID string
 		NotifyDays                                                                 int
 		NotifyUpcoming, NotifyChanges, NotifyMonthly                               bool
@@ -54,15 +55,34 @@ type dataBackup struct {
 	} `json:"activities"`
 }
 
-func (a *application) exportData(w http.ResponseWriter, _ *http.Request) {
+func (a *application) exportData(w http.ResponseWriter, r *http.Request) {
 	var b dataBackup
-	b.Version = 2
+	b.Version = 3
 	b.ExportedAt = time.Now().In(a.location).Format(time.RFC3339)
+	b.NotificationCredentialsIncluded = r.URL.Query().Get("includeNotificationCredentials") == "true"
 	b.Settings.Timezone = a.location.String()
-	err := a.db.QueryRow(`SELECT u.name,u.currency,c.discord_webhook,c.telegram_bot_token,c.telegram_chat_id,n.days_before,n.notify_upcoming,n.notify_changes,n.notify_monthly FROM users u,notification_channels c,notification_rules n WHERE u.id=1 AND c.id=1 AND n.id=1`).Scan(&b.Settings.Name, &b.Settings.Currency, &b.Settings.DiscordWebhook, &b.Settings.TelegramBotToken, &b.Settings.TelegramChatID, &b.Settings.NotifyDays, &b.Settings.NotifyUpcoming, &b.Settings.NotifyChanges, &b.Settings.NotifyMonthly)
+	err := a.db.QueryRow(`SELECT u.name,u.currency,n.days_before,n.notify_upcoming,n.notify_changes,n.notify_monthly FROM users u,notification_rules n WHERE u.id=1 AND n.id=1`).Scan(
+		&b.Settings.Name,
+		&b.Settings.Currency,
+		&b.Settings.NotifyDays,
+		&b.Settings.NotifyUpcoming,
+		&b.Settings.NotifyChanges,
+		&b.Settings.NotifyMonthly,
+	)
 	if err != nil {
 		a.fail(w, err)
 		return
+	}
+	if b.NotificationCredentialsIncluded {
+		err = a.db.QueryRow(`SELECT discord_webhook,telegram_bot_token,telegram_chat_id FROM notification_channels WHERE id=1`).Scan(
+			&b.Settings.DiscordWebhook,
+			&b.Settings.TelegramBotToken,
+			&b.Settings.TelegramChatID,
+		)
+		if err != nil {
+			a.fail(w, err)
+			return
+		}
 	}
 	pm, err := a.db.Query(`SELECT id,name,archived FROM payment_methods WHERE is_builtin=0 ORDER BY id`)
 	if err != nil {
@@ -199,7 +219,7 @@ func (a *application) importData(w http.ResponseWriter, r *http.Request) {
 		bad(w, "백업 JSON을 읽을 수 없어요")
 		return
 	}
-	if b.Version != 1 && b.Version != 2 {
+	if b.Version != 1 && b.Version != 2 && b.Version != 3 {
 		bad(w, "지원하지 않는 백업 버전이에요")
 		return
 	}
@@ -271,7 +291,13 @@ func (a *application) importData(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if _, err = tx.Exec(`UPDATE users SET name=?,currency=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, b.Settings.Name, b.Settings.Currency); err == nil {
+	_, err = tx.Exec(
+		`UPDATE users SET name=?,currency=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`,
+		b.Settings.Name,
+		b.Settings.Currency,
+	)
+	backupIncludesNotificationCredentials := b.Version < 3 || b.NotificationCredentialsIncluded
+	if err == nil && backupIncludesNotificationCredentials {
 		_, err = tx.Exec(`UPDATE notification_channels SET discord_webhook=?,telegram_bot_token=?,telegram_chat_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, b.Settings.DiscordWebhook, b.Settings.TelegramBotToken, b.Settings.TelegramChatID)
 	}
 	if err == nil {

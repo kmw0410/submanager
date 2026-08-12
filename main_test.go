@@ -288,12 +288,12 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	css := string(cssSource)
-	for _, rule := range []string{".main:focus{outline:none}", ".upcoming-row .sub-content{flex:1;text-align:left}", "#addSubscriptionButton{height:39px", ".skip-status{display:inline-flex", `@media(max-width:620px){.skip-status-mobile{display:inline-flex}}`} {
+	for _, rule := range []string{".main:focus{outline:none}", ".upcoming-row .sub-content{flex:1;text-align:left}", "#addSubscriptionButton{height:39px", ".skip-status{display:inline-flex", ".sub-card.skipped{opacity:1;border:2px solid", ".list-row.skipped{opacity:1", ".button.skip-action{color:", `@media(max-width:620px){.skip-status-mobile{display:inline-flex}}`} {
 		if !strings.Contains(css, rule) {
 			t.Fatalf("missing presentation rule %q", rule)
 		}
 	}
-	if !strings.Contains(js, `s.Skipped?'이번 달 결제 건너뜀'`) || !strings.Contains(js, `s.Skipped?'skip-status':''`) {
+	if !strings.Contains(js, `s.Skipped?'이번 달 결제 건너뜀'`) || !strings.Contains(js, `s.Skipped?'skip-status':''`) || !strings.Contains(js, `class="button skip-action ${s.Skipped?'restore':''}"`) {
 		t.Fatal("skipped subscriptions must show an explicit status badge")
 	}
 

@@ -329,6 +329,26 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 	}
 }
 
+func TestDashboardResponsiveLayout(t *testing.T) {
+	cssSource, err := webFS.ReadFile("web/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(cssSource)
+	for _, rule := range []string{
+		"grid-template-columns:minmax(0,1.45fr)",
+		".currency-tabs{max-width:100%;overflow-x:auto",
+		".upcoming-row{display:grid;grid-template-columns:minmax(0,1fr) auto",
+		"max-height:93dvh",
+		"@media(max-width:420px)",
+		".form-actions,.edit-actions,.data-actions{display:grid;grid-template-columns:1fr}",
+	} {
+		if !strings.Contains(css, rule) {
+			t.Fatalf("responsive dashboard is missing %q", rule)
+		}
+	}
+}
+
 func TestNotificationTestMessageIncludesExamplePayment(t *testing.T) {
 	message := notificationTestMessage(time.Date(2026, time.August, 11, 0, 0, 0, 0, time.FixedZone("Asia/Seoul", 9*60*60)))
 	for _, want := range []string{"SubManager 알림 테스트", "정기결제 알림 테스트", "1,000원", "2026.08.11 결제 예정이에요."} {

@@ -108,12 +108,12 @@ func TestPriceHistoryKeepsPastMonthsStable(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT id FROM payment_methods WHERE is_builtin=1 LIMIT 1`).Scan(&paymentID); err != nil {
 		t.Fatal(err)
 	}
-	result, err := a.db.Exec(`INSERT INTO subscriptions(service_name,amount,currency,billing_cycle,billing_day,billing_anchor,payment_method_id,started_at) VALUES('가격 변경',20,'USD','monthly',20,'2026-07-20',?,'2026-07-01')`, paymentID)
+	result, err := a.db.Exec(`INSERT INTO subscriptions(service_name,amount,currency,billing_cycle,billing_day,billing_anchor,payment_method_id,started_at) VALUES('가격 변경',2000,'USD','monthly',20,'2026-07-20',?,'2026-07-01')`, paymentID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	id, _ := result.LastInsertId()
-	if _, err = a.db.Exec(`INSERT INTO subscription_price_history(subscription_id,amount,currency,effective_from) VALUES(?,14900,'KRW','2026-07-01'),(?,20,'USD','2026-08-01')`, id, id); err != nil {
+	if _, err = a.db.Exec(`INSERT INTO subscription_price_history(subscription_id,amount,currency,effective_from) VALUES(?,14900,'KRW','2026-07-01'),(?,2000,'USD','2026-08-01')`, id, id); err != nil {
 		t.Fatal(err)
 	}
 	july, err := a.monthTotals("2026-07")
@@ -124,7 +124,7 @@ func TestPriceHistoryKeepsPastMonthsStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if july["KRW"] != 14900 || august["USD"] != 20 {
+	if july["KRW"] != 14900 || august["USD"] != 2000 {
 		t.Fatalf("july=%v august=%v", july, august)
 	}
 }
@@ -138,12 +138,12 @@ func TestJSONExportImportRoundTrip(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT id FROM payment_methods WHERE is_builtin=1 LIMIT 1`).Scan(&paymentID); err != nil {
 		t.Fatal(err)
 	}
-	result, err := a.db.Exec(`INSERT INTO subscriptions(service_name,amount,currency,billing_cycle,billing_day,billing_anchor,payment_method_id,started_at) VALUES('백업 구독',15,'GBP','monthly',10,'2026-08-10',?,'2026-08-01')`, paymentID)
+	result, err := a.db.Exec(`INSERT INTO subscriptions(service_name,amount,currency,billing_cycle,billing_day,billing_anchor,payment_method_id,started_at) VALUES('백업 구독',1599,'GBP','monthly',10,'2026-08-10',?,'2026-08-01')`, paymentID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	id, _ := result.LastInsertId()
-	if _, err = a.db.Exec(`INSERT INTO subscription_price_history(subscription_id,amount,currency,effective_from) VALUES(?,15,'GBP','2026-08-01')`, id); err != nil {
+	if _, err = a.db.Exec(`INSERT INTO subscription_price_history(subscription_id,amount,currency,effective_from) VALUES(?,1599,'GBP','2026-08-01')`, id); err != nil {
 		t.Fatal(err)
 	}
 	exportRecorder := httptest.NewRecorder()
@@ -154,17 +154,95 @@ func TestJSONExportImportRoundTrip(t *testing.T) {
 	if bytes.Contains(exportRecorder.Body.Bytes(), []byte("password_hash")) {
 		t.Fatal("backup exposed password hash")
 	}
+	var backup dataBackup
+	if err := json.Unmarshal(exportRecorder.Body.Bytes(), &backup); err != nil {
+		t.Fatal(err)
+	}
+	if backup.Version != 2 || len(backup.Subscriptions) != 1 || backup.Subscriptions[0].Amount != 1599 {
+		t.Fatalf("unexpected backup amount encoding: version=%d subscriptions=%+v", backup.Version, backup.Subscriptions)
+	}
 	importRecorder := httptest.NewRecorder()
 	a.importData(importRecorder, httptest.NewRequest(http.MethodPost, "/api/data/import", bytes.NewReader(exportRecorder.Body.Bytes())))
 	if importRecorder.Code != http.StatusOK {
 		t.Fatalf("import=%d %s", importRecorder.Code, importRecorder.Body.String())
 	}
 	var count int
-	if err := a.db.QueryRow(`SELECT COUNT(*) FROM subscriptions WHERE service_name='백업 구독' AND currency='GBP'`).Scan(&count); err != nil {
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM subscriptions WHERE service_name='백업 구독' AND currency='GBP' AND amount=1599`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
 		t.Fatal("subscription was not restored")
+	}
+}
+
+func TestLegacyAmountsMigrateToMinorUnitsOnce(t *testing.T) {
+	a := newTestApplication(t)
+	var paymentID int64
+	if err := a.db.QueryRow(`SELECT id FROM payment_methods WHERE is_builtin=1 LIMIT 1`).Scan(&paymentID); err != nil {
+		t.Fatal(err)
+	}
+	result, err := a.db.Exec(`INSERT INTO subscriptions(service_name,amount,currency,billing_cycle,billing_day,billing_anchor,payment_method_id,started_at) VALUES('리라 구독',125,'TRY','monthly',10,'2026-08-10',?,'2026-08-01')`, paymentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := result.LastInsertId()
+	if _, err := a.db.Exec(`INSERT INTO subscription_price_history(subscription_id,amount,currency,effective_from) VALUES(?,125,'TRY','2026-08-01'); DELETE FROM app_metadata WHERE key='amounts_minor_units_v1'`, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	var amount, historyAmount int64
+	if err := a.db.QueryRow(`SELECT amount FROM subscriptions WHERE id=?`, id).Scan(&amount); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.QueryRow(`SELECT amount FROM subscription_price_history WHERE subscription_id=?`, id).Scan(&historyAmount); err != nil {
+		t.Fatal(err)
+	}
+	if amount != 12500 || historyAmount != 12500 {
+		t.Fatalf("legacy amount migrated incorrectly: subscription=%d history=%d", amount, historyAmount)
+	}
+}
+
+func TestLegacyBackupAmountsAreUpgraded(t *testing.T) {
+	oldAmount, newAmount := int64(10), int64(20)
+	oldCurrency, newCurrency := "USD", "TRY"
+	var backup dataBackup
+	backup.Version = 1
+	backup.Subscriptions = append(backup.Subscriptions, struct {
+		ID                                                                                                                           int64
+		ServiceID                                                                                                                    *int64
+		ServiceName, Icon, Color, Currency, BillingCycle, BillingAnchor, Category, Memo, Status, StartedAt, CancelledAt, TrialEndsAt string
+		Amount                                                                                                                       int64
+		BillingDay                                                                                                                   int
+		PaymentMethodID                                                                                                              int64
+	}{Amount: 25, Currency: "TRY"})
+	backup.Activities = append(backup.Activities, struct {
+		ID                       int64
+		SubscriptionID           *int64
+		EventType, ServiceName   string
+		OldAmount, NewAmount     *int64
+		OldCurrency, NewCurrency *string
+		OccurredAt               string
+	}{OldAmount: &oldAmount, NewAmount: &newAmount, OldCurrency: &oldCurrency, NewCurrency: &newCurrency})
+	upgradeLegacyBackupAmounts(&backup)
+	if backup.Subscriptions[0].Amount != 2500 || oldAmount != 1000 || newAmount != 2000 {
+		t.Fatalf("legacy backup amounts were not upgraded: subscription=%d old=%d new=%d", backup.Subscriptions[0].Amount, oldAmount, newAmount)
+	}
+}
+
+func TestMinorUnitMoneyFormatting(t *testing.T) {
+	for _, test := range []struct {
+		amount   int64
+		currency string
+		want     string
+	}{{12345, "TRY", "₺123.45"}, {14900, "KRW", "₩14,900"}, {12345, "KWD", "KWD 12.345"}} {
+		if got := money(test.amount, test.currency); got != test.want {
+			t.Fatalf("money(%d, %q)=%q want %q", test.amount, test.currency, got, test.want)
+		}
 	}
 }
 
@@ -179,6 +257,19 @@ func TestImportControlUsesStyledLabel(t *testing.T) {
 	}
 	if strings.Contains(text, `#importData').click()`) {
 		t.Fatal("import label must not depend on a programmatic file picker click")
+	}
+}
+
+func TestSubscriptionAmountInputSupportsCurrencyDecimals(t *testing.T) {
+	source, err := webFS.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, want := range []string{`inputmode="decimal"`, `amountMinorUnits`, `currencyDigits`, `통화의 소수 자릿수에 맞게 금액을 입력해 주세요.`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("amount input is missing %q", want)
+		}
 	}
 }
 

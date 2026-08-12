@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
 	"io"
 	"log"
@@ -54,6 +55,7 @@ type currencyOption struct {
 	ID        int64  `json:"id"`
 	Code      string `json:"code"`
 	Name      string `json:"name"`
+	Digits    int    `json:"digits"`
 	IsBuiltin bool   `json:"isBuiltin"`
 	Archived  bool   `json:"archived"`
 }
@@ -189,6 +191,7 @@ CREATE INDEX IF NOT EXISTS idx_activity_events_date ON activity_events(occurred_
 CREATE TABLE IF NOT EXISTS notification_channels (id INTEGER PRIMARY KEY CHECK(id=1), discord_webhook TEXT NOT NULL DEFAULT '', telegram_bot_token TEXT NOT NULL DEFAULT '', telegram_chat_id TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS notification_rules (id INTEGER PRIMARY KEY CHECK(id=1), notify_upcoming INTEGER NOT NULL DEFAULT 1, notify_changes INTEGER NOT NULL DEFAULT 1, notify_monthly INTEGER NOT NULL DEFAULT 1, days_before INTEGER NOT NULL DEFAULT 3, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS notification_deliveries (id INTEGER PRIMARY KEY, delivery_key TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS app_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 INSERT OR IGNORE INTO users(id,name,currency,timezone) VALUES(1,'사용자','KRW','Asia/Seoul');
 INSERT OR IGNORE INTO notification_channels(id) VALUES(1);
 INSERT OR IGNORE INTO notification_rules(id) VALUES(1);
@@ -216,6 +219,9 @@ INSERT OR IGNORE INTO notification_rules(id) VALUES(1);
 		if err := a.ensureColumn("users", column.name, column.definition); err != nil {
 			return err
 		}
+	}
+	if err := a.migrateAmountsToMinorUnits(); err != nil {
+		return err
 	}
 	services := []service{
 		{Name: "네이버플러스 멤버십", Icon: "N+", Category: "생활", BillingCycle: "monthly", Currency: "KRW", Color: "#8FC9A3"},
@@ -258,6 +264,58 @@ INSERT OR IGNORE INTO notification_rules(id) VALUES(1);
 		return err
 	}
 	return nil
+}
+
+func (a *application) migrateAmountsToMinorUnits() error {
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var done int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM app_metadata WHERE key='amounts_minor_units_v1'`).Scan(&done); err != nil {
+		return err
+	}
+	if done != 0 {
+		return tx.Commit()
+	}
+	rows, err := tx.Query(`SELECT DISTINCT currency FROM (SELECT currency FROM subscriptions UNION SELECT currency FROM subscription_occurrences UNION SELECT currency FROM subscription_price_history UNION SELECT old_currency FROM activity_events UNION SELECT new_currency FROM activity_events) WHERE currency IS NOT NULL AND currency<>''`)
+	if err != nil {
+		return err
+	}
+	var currencies []string
+	for rows.Next() {
+		var currency string
+		if err := rows.Scan(&currency); err != nil {
+			rows.Close()
+			return err
+		}
+		currencies = append(currencies, strings.ToUpper(currency))
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, currency := range currencies {
+		factor := minorUnitFactor(currency)
+		if factor == 1 {
+			continue
+		}
+		for _, query := range []string{
+			`UPDATE subscriptions SET amount=amount*? WHERE UPPER(currency)=?`,
+			`UPDATE subscription_occurrences SET amount=amount*? WHERE UPPER(currency)=?`,
+			`UPDATE subscription_price_history SET amount=amount*? WHERE UPPER(currency)=?`,
+			`UPDATE activity_events SET old_amount=old_amount*? WHERE old_amount IS NOT NULL AND UPPER(old_currency)=?`,
+			`UPDATE activity_events SET new_amount=new_amount*? WHERE new_amount IS NOT NULL AND UPPER(new_currency)=?`,
+		} {
+			if _, err := tx.Exec(query, factor, currency); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO app_metadata(key,value) VALUES('amounts_minor_units_v1','1')`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (a *application) ensureColumn(table, column, definition string) error {
@@ -515,6 +573,7 @@ func (a *application) loadState() (appState, error) {
 			currencyRows.Close()
 			return s, err
 		}
+		v.Digits = currencyFractionDigits(v.Code)
 		s.Currencies = append(s.Currencies, v)
 	}
 	if err := currencyRows.Close(); err != nil {
@@ -1430,7 +1489,7 @@ type dataBackup struct {
 
 func (a *application) exportData(w http.ResponseWriter, _ *http.Request) {
 	var b dataBackup
-	b.Version = 1
+	b.Version = 2
 	b.ExportedAt = time.Now().In(a.location).Format(time.RFC3339)
 	err := a.db.QueryRow(`SELECT u.name,u.currency,u.timezone,c.discord_webhook,c.telegram_bot_token,c.telegram_chat_id,n.days_before,n.notify_upcoming,n.notify_changes,n.notify_monthly FROM users u,notification_channels c,notification_rules n WHERE u.id=1 AND c.id=1 AND n.id=1`).Scan(&b.Settings.Name, &b.Settings.Currency, &b.Settings.Timezone, &b.Settings.DiscordWebhook, &b.Settings.TelegramBotToken, &b.Settings.TelegramChatID, &b.Settings.NotifyDays, &b.Settings.NotifyUpcoming, &b.Settings.NotifyChanges, &b.Settings.NotifyMonthly)
 	if err != nil {
@@ -1572,9 +1631,12 @@ func (a *application) importData(w http.ResponseWriter, r *http.Request) {
 		bad(w, "백업 JSON을 읽을 수 없어요")
 		return
 	}
-	if b.Version != 1 {
+	if b.Version != 1 && b.Version != 2 {
 		bad(w, "지원하지 않는 백업 버전이에요")
 		return
+	}
+	if b.Version == 1 {
+		upgradeLegacyBackupAmounts(&b)
 	}
 	tx, err := a.db.Begin()
 	if err != nil {
@@ -1648,6 +1710,27 @@ func (a *application) importData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func upgradeLegacyBackupAmounts(b *dataBackup) {
+	for i := range b.Subscriptions {
+		b.Subscriptions[i].Amount *= minorUnitFactor(b.Subscriptions[i].Currency)
+	}
+	for i := range b.Occurrences {
+		b.Occurrences[i].Amount *= minorUnitFactor(b.Occurrences[i].Currency)
+	}
+	for i := range b.PriceHistory {
+		b.PriceHistory[i].Amount *= minorUnitFactor(b.PriceHistory[i].Currency)
+	}
+	for i := range b.Activities {
+		v := &b.Activities[i]
+		if v.OldAmount != nil && v.OldCurrency != nil {
+			*v.OldAmount *= minorUnitFactor(*v.OldCurrency)
+		}
+		if v.NewAmount != nil && v.NewCurrency != nil {
+			*v.NewAmount *= minorUnitFactor(*v.NewCurrency)
+		}
+	}
 }
 
 func nullIfEmpty(v string) any {
@@ -1749,9 +1832,36 @@ func initial(s string) string {
 func money(v int64, currency string) string {
 	symbol := map[string]string{"KRW": "₩", "USD": "$", "JPY": "¥", "EUR": "€", "TRY": "₺", "ARS": "ARS $"}[strings.ToUpper(currency)]
 	if symbol == "" {
-		return strings.ToUpper(currency) + " " + formatNumber(v)
+		return strings.ToUpper(currency) + " " + formatMinorUnits(v, currency)
 	}
-	return symbol + formatNumber(v)
+	return symbol + formatMinorUnits(v, currency)
+}
+
+func currencyFractionDigits(currency string) int {
+	currency = strings.ToUpper(currency)
+	if strings.Contains(" BIF CLP DJF GNF ISK JPY KMF KRW PYG RWF UGX VND VUV XAF XOF XPF ", " "+currency+" ") {
+		return 0
+	}
+	if strings.Contains(" BHD IQD JOD KWD LYD OMR TND ", " "+currency+" ") {
+		return 3
+	}
+	return 2
+}
+
+func minorUnitFactor(currency string) int64 {
+	factor := int64(1)
+	for i := 0; i < currencyFractionDigits(currency); i++ {
+		factor *= 10
+	}
+	return factor
+}
+
+func formatMinorUnits(v int64, currency string) string {
+	factor := minorUnitFactor(currency)
+	if factor == 1 {
+		return formatNumber(v)
+	}
+	return formatNumber(v/factor) + "." + fmt.Sprintf("%0*d", currencyFractionDigits(currency), v%factor)
 }
 func formatNumber(v int64) string {
 	s := strconv.FormatInt(v, 10)

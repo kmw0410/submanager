@@ -6,3 +6,4 @@
 submanager-backup-*.json
 *.log
 .env
+/WORK.md

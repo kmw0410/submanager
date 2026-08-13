@@ -139,6 +139,19 @@
         }
         return response;
       };
+
+      const modalBody = document.querySelector("#modalBody");
+      const removeInactiveNotificationControls = () => {
+        modalBody?.querySelectorAll('input[name="notifyChanges"], input[name="notifyMonthly"]')
+          .forEach((input) => input.closest(".check-row")?.remove());
+      };
+      if (modalBody) {
+        new MutationObserver(removeInactiveNotificationControls).observe(modalBody, {
+          childList: true,
+          subtree: true,
+        });
+        removeInactiveNotificationControls();
+      }
     })();
   </script>
   <script src="/assets/app.js" defer></script>

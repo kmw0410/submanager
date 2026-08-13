@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -12,6 +13,68 @@ import (
 	"strings"
 	"time"
 )
+
+type upcomingNotification struct {
+	Days  int
+	Items []string
+}
+
+func (n upcomingNotification) plainText() string {
+	var b strings.Builder
+	b.WriteString("🔔 결제 예정\n\n")
+	fmt.Fprintf(&b, "%d일 뒤에 %d개의 항목이 결제 예정이에요:\n\n", n.Days, len(n.Items))
+	for _, item := range n.Items {
+		b.WriteString("- ")
+		b.WriteString(item)
+		b.WriteByte('\n')
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func (n upcomingNotification) telegramMarkdown() string {
+	var b strings.Builder
+	b.WriteString("*🔔 결제 예정*\n\n")
+	fmt.Fprintf(&b, "%d일 뒤에 %d개의 항목이 결제 예정이에요:\n\n", n.Days, len(n.Items))
+	for _, item := range n.Items {
+		b.WriteString("\\- ")
+		b.WriteString(escapeTelegramMarkdownV2(item))
+		b.WriteByte('\n')
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func escapeTelegramMarkdownV2(value string) string {
+	replacer := strings.NewReplacer(
+		"\\", "\\\\",
+		"_", "\\_",
+		"*", "\\*",
+		"[", "\\[",
+		"]", "\\]",
+		"(", "\\(",
+		")", "\\)",
+		"~", "\\~",
+		"`", "\\`",
+		">", "\\>",
+		"#", "\\#",
+		"+", "\\+",
+		"-", "\\-",
+		"=", "\\=",
+		"|", "\\|",
+		"{", "\\{",
+		"}", "\\}",
+		".", "\\.",
+		"!", "\\!",
+	)
+	return replacer.Replace(value)
+}
+
+func telegramPayload(chat string, notification upcomingNotification) map[string]string {
+	return map[string]string{
+		"chat_id":    chat,
+		"text":       notification.telegramMarkdown(),
+		"parse_mode": "MarkdownV2",
+	}
+}
 
 func (a *application) testNotification(w http.ResponseWriter, r *http.Request) {
 	var v struct {
@@ -34,16 +97,27 @@ func (a *application) testNotification(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(v.TelegramChatID) != "" {
 		chat = strings.TrimSpace(v.TelegramChatID)
 	}
+	var days int
+	if err := a.db.QueryRow(`SELECT days_before FROM notification_rules WHERE id=1`).Scan(&days); err != nil {
+		a.fail(w, err)
+		return
+	}
+	notification := upcomingNotification{
+		Days: days,
+		Items: []string{
+			"테스트 결제항목 1",
+			"테스트 결제항목 2",
+		},
+	}
 	client := &http.Client{Timeout: 8 * time.Second}
 	var req *http.Request
 	var err error
-	message := notificationTestMessage(time.Now().In(a.location))
 	if v.Channel == "discord" {
 		if discord == "" {
 			bad(w, "Discord Webhook 주소를 입력해 주세요")
 			return
 		}
-		body, _ := json.Marshal(discordWebhookPayload(message))
+		body, _ := json.Marshal(discordWebhookPayload(notification.plainText()))
 		req, err = http.NewRequest(http.MethodPost, discord, strings.NewReader(string(body)))
 	} else if v.Channel == "telegram" {
 		if token == "" || chat == "" {
@@ -51,7 +125,7 @@ func (a *application) testNotification(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		endpoint := "https://api.telegram.org/bot" + token + "/sendMessage"
-		body, _ := json.Marshal(map[string]string{"chat_id": chat, "text": message})
+		body, _ := json.Marshal(telegramPayload(chat, notification))
 		req, err = http.NewRequest(http.MethodPost, endpoint, strings.NewReader(string(body)))
 	} else {
 		bad(w, "알림 채널을 확인해 주세요")
@@ -76,10 +150,6 @@ func (a *application) testNotification(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func notificationTestMessage(now time.Time) string {
-	return "SubManager 알림 테스트\n\n🔔 정기결제 알림 테스트\n1,000원\n" + now.Format("2006.01.02") + " 결제 예정이에요."
-}
-
 func (a *application) notificationLoop(ctx context.Context) {
 	a.runScheduledNotifications()
 	ticker := time.NewTicker(6 * time.Hour)
@@ -95,79 +165,56 @@ func (a *application) notificationLoop(ctx context.Context) {
 }
 
 func (a *application) runScheduledNotifications() {
-	var upcoming, monthly bool
+	var upcoming bool
 	var days int
-	if err := a.db.QueryRow(`SELECT notify_upcoming,notify_monthly,days_before FROM notification_rules WHERE id=1`).Scan(&upcoming, &monthly, &days); err != nil {
+	if err := a.db.QueryRow(`SELECT notify_upcoming,days_before FROM notification_rules WHERE id=1`).Scan(&upcoming, &days); err != nil {
 		log.Printf("notification rules: %v", err)
 		return
 	}
-	now := time.Now().In(a.location)
-	if upcoming {
-		subs, err := a.loadSubscriptions()
-		if err != nil {
-			log.Printf("upcoming notifications: %v", err)
-			return
-		}
-		for _, s := range subs {
-			if s.Status != "active" || s.Skipped {
-				continue
-			}
-			due := nextPayment(now, s.BillingDay, s.BillingCycle, s.BillingDate)
-			d, _ := time.ParseInLocation("2006-01-02", due, a.location)
-			remaining := int(time.Until(d).Hours() / 24)
-			if d.Location() == a.location {
-				remaining = int(d.Sub(time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, a.location)).Hours() / 24)
-			}
-			if remaining == days {
-				key := "upcoming:" + strconv.FormatInt(s.ID, 10) + ":" + due + ":" + strconv.Itoa(days)
-				a.deliverOnce(key, "🔔 결제 예정\n\n"+s.ServiceName+"\n"+money(s.Amount, s.Currency)+"\n\n"+strconv.Itoa(days)+"일 뒤 결제 예정이에요.")
-			}
-		}
-	}
-	if monthly && now.Day() == 1 {
-		totals, err := a.monthTotals(now.Format("2006-01"))
-		if err != nil {
-			log.Printf("monthly notification: %v", err)
-			return
-		}
-		previous, err := a.monthTotals(now.AddDate(0, -1, 0).Format("2006-01"))
-		if err != nil {
-			return
-		}
-		currencies := make([]string, 0, len(totals))
-		for currency := range totals {
-			currencies = append(currencies, currency)
-		}
-		sort.Strings(currencies)
-		lines := make([]string, 0, len(currencies))
-		for _, currency := range currencies {
-			line := money(totals[currency], currency)
-			delta := totals[currency] - previous[currency]
-			if delta > 0 {
-				line += " · +" + money(delta, currency)
-			} else if delta < 0 {
-				line += " · -" + money(-delta, currency)
-			}
-			lines = append(lines, line)
-		}
-		if len(lines) == 0 {
-			lines = append(lines, money(0, "KRW"))
-		}
-		a.deliverOnce("monthly:"+now.Format("2006-01"), "📊 이번 달 구독비\n\n"+strings.Join(lines, "\n"))
-	}
-}
-
-func (a *application) notifyChange(message string) {
-	var enabled bool
-	if err := a.db.QueryRow(`SELECT notify_changes FROM notification_rules WHERE id=1`).Scan(&enabled); err != nil || !enabled {
+	if !upcoming {
 		return
 	}
-	if err := a.sendConfigured(message); err != nil {
-		log.Printf("change notification: %v", err)
+
+	now := time.Now().In(a.location)
+	subs, err := a.loadSubscriptions()
+	if err != nil {
+		log.Printf("upcoming notifications: %v", err)
+		return
 	}
+
+	items := make([]string, 0)
+	dueDate := ""
+	for _, s := range subs {
+		if s.Status != "active" || s.Skipped {
+			continue
+		}
+		due := nextPayment(now, s.BillingDay, s.BillingCycle, s.BillingDate)
+		d, err := time.ParseInLocation("2006-01-02", due, a.location)
+		if err != nil {
+			continue
+		}
+		remaining := int(d.Sub(time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, a.location)).Hours() / 24)
+		if remaining != days {
+			continue
+		}
+		items = append(items, s.ServiceName)
+		dueDate = due
+	}
+	if len(items) == 0 {
+		return
+	}
+
+	sort.Strings(items)
+	notification := upcomingNotification{Days: days, Items: items}
+	key := "upcoming:" + dueDate + ":" + strconv.Itoa(days)
+	a.deliverOnce(key, notification)
 }
 
-func (a *application) deliverOnce(key, message string) {
+// Change and monthly-summary notifications are intentionally disabled.
+// Discord and Telegram only receive grouped upcoming-payment notifications.
+func (a *application) notifyChange(_ string) {}
+
+func (a *application) deliverOnce(key string, notification upcomingNotification) {
 	res, err := a.db.Exec(`INSERT OR IGNORE INTO notification_deliveries(delivery_key) VALUES(?)`, key)
 	if err != nil {
 		log.Printf("notification delivery: %v", err)
@@ -177,7 +224,7 @@ func (a *application) deliverOnce(key, message string) {
 	if n == 0 {
 		return
 	}
-	if err := a.sendConfigured(message); err != nil {
+	if err := a.sendConfigured(notification); err != nil {
 		_, _ = a.db.Exec(`DELETE FROM notification_deliveries WHERE delivery_key=?`, key)
 		if !errors.Is(err, errNoChannels) {
 			log.Printf("notification delivery: %v", err)
@@ -203,7 +250,7 @@ func discordWebhookPayload(message string) map[string]any {
 	}
 }
 
-func (a *application) sendConfigured(message string) error {
+func (a *application) sendConfigured(notification upcomingNotification) error {
 	var discord, token, chat string
 	if err := a.db.QueryRow(`SELECT discord_webhook,telegram_bot_token,telegram_chat_id FROM notification_channels WHERE id=1`).Scan(&discord, &token, &chat); err != nil {
 		return err
@@ -212,7 +259,7 @@ func (a *application) sendConfigured(message string) error {
 	sent := 0
 	var lastErr error
 	if discord != "" {
-		body, _ := json.Marshal(discordWebhookPayload(message))
+		body, _ := json.Marshal(discordWebhookPayload(notification.plainText()))
 		req, err := http.NewRequest(http.MethodPost, discord, strings.NewReader(string(body)))
 		if err == nil {
 			req.Header.Set("Content-Type", "application/json")
@@ -232,7 +279,7 @@ func (a *application) sendConfigured(message string) error {
 		}
 	}
 	if token != "" && chat != "" {
-		body, _ := json.Marshal(map[string]string{"chat_id": chat, "text": message})
+		body, _ := json.Marshal(telegramPayload(chat, notification))
 		req, err := http.NewRequest(http.MethodPost, "https://api.telegram.org/bot"+token+"/sendMessage", strings.NewReader(string(body)))
 		if err == nil {
 			req.Header.Set("Content-Type", "application/json")

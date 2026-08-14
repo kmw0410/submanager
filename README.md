@@ -1,6 +1,8 @@
 # SubManager
 
-국내 환경에 맞는 가벼운 self-hosted 구독 관리 대시보드입니다. 하나의 Go 실행 파일과 SQLite만으로 동작하며, 별도의 프런트엔드 빌드 과정이나 외부 데이터베이스가 필요하지 않습니다.
+국내 환경에 맞는 경량 구독관리 대시보드.
+
+![](dashboard.png)
 
 ## 주요 기능
 
@@ -20,48 +22,27 @@
 
 ## 기술 스택
 
-| 구분 | 기술 |
-|---|---|
-| 서버 | Go 1.24, `net/http` |
-| 데이터베이스 | SQLite, `go-sqlite3` |
-| 화면 | 서버 렌더링 HTML, Vanilla JavaScript, CSS |
-| 배포 | Docker, Alpine Linux 3.22 |
+- Alpine Linux 3.22 + Go 1.24
+- SQLite
+- HTML, CSS, JS
 
-`web/`의 HTML, CSS, JavaScript는 Go 바이너리에 포함되므로 실행 시 별도의 정적 파일 서버가 필요하지 않습니다.
+## 시작하기
 
-## Docker로 시작하기
-
-저장소의 `docker-compose.yml`은 GHCR에 게시된 이미지를 사용합니다.
+Docker을 사용하여 간편하게 시작할 수 있습니다. `docker-compose.yml`을 내려받아 다음 명령어를 실행하고 `http://IP주소:8080`으로 접속하세요.
 
 ```bash
 docker compose up -d
 ```
 
-브라우저에서 [http://localhost:8080](http://localhost:8080)에 접속합니다. 최초 접속 시 이름, 이메일, 8~72자의 비밀번호를 입력해 관리자 계정을 만드세요. 관리자 생성 이후에는 추가 가입이 차단됩니다.
-
-이미지만 직접 받으려면 다음 명령을 사용합니다.
-
-```bash
-docker pull ghcr.io/kmw0410/submanager:latest
-```
-
-애플리케이션 데이터는 `submanager-data` Docker 볼륨의 `/data/submanager.db`에 저장됩니다. 컨테이너를 다시 만들거나 이미지를 업데이트해도 같은 볼륨을 사용하는 한 데이터는 유지됩니다.
-
-```bash
-docker compose pull
-docker compose up -d
-```
+기본값은 `submanager-data` Docker 볼륨의 `/data/submanager.db`에 저장되며 필요한 경우 `submanager-data` 볼륨을 제거하고 호스트 맵핑으로 사용할 수 있습니다.
 
 ## 환경 변수
 
-| 이름 | 기본값 | 설명 |
+| 이름 | 기본값 |
 |---|---|---|
-| `PORT` | `8080` | HTTP 서버가 수신할 포트입니다. Docker Compose에서는 호스트와 컨테이너 모두 `8080`으로 고정됩니다. |
-| `DB_PATH` | 로컬 `./data/submanager.db`, 이미지 `/data/submanager.db` | SQLite 데이터베이스 파일 경로입니다. 상위 디렉터리는 시작할 때 자동 생성됩니다. |
-| `TZ` | `Asia/Seoul` | 결제일 계산과 예약 알림에 사용하는 시간대입니다. |
-
-잘못된 `TZ` 값은 UTC+09:00의 `Asia/Seoul` 고정 시간대로 대체됩니다.
-시간대는 실행 환경의 `TZ`로만 설정합니다.
+| `PORT` | `8080` |
+| `DB_PATH` | `./data/submanager.db` |
+| `TZ` | `Asia/Seoul` |
 
 ## 사용 방법
 

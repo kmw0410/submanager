@@ -22,6 +22,9 @@ concurrency:
 
 jobs:
   docker:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, '[skip actions]') == false
     runs-on: self-hosted
 
     permissions:

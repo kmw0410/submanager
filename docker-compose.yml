@@ -8,7 +8,6 @@ services:
     environment:
       DB_PATH: /data/submanager.db
       TZ: ${TZ:-Asia/Seoul}
-      SETUP_TOKEN: ${SETUP_TOKEN:-}
     volumes:
       - submanager-data:/data
     healthcheck:

@@ -22,7 +22,7 @@
       <p>관리자 계정으로 SubManager를 열어보세요.</p>
       {{end}}
       <form id="authForm" data-mode="{{.Mode}}">
-        {{if eq .Mode "setup"}}<label class="field"><span>최초 설정 키</span><input name="setupToken" required type="password" minlength="16" maxlength="128" autocomplete="off" placeholder="SETUP_TOKEN 값을 입력해 주세요"></label>{{end}}
+        {{if eq .Mode "setup"}}<label class="field"><span>최초 설정 키</span><input name="setupToken" required type="password" minlength="48" maxlength="48" autocomplete="off" placeholder="자동 생성된 설정 키를 입력해 주세요"><p class="help"><code>docker compose exec submanager cat /data/.submanager-setup-token</code> 명령으로 확인할 수 있어요.</p></label>{{end}}
         {{if eq .Mode "setup"}}<label class="field"><span>이름</span><input name="name" required maxlength="50" autocomplete="name" placeholder="이름을 입력해 주세요"></label>{{end}}
         <label class="field"><span>이메일</span><input name="email" required type="email" maxlength="254" autocomplete="email" placeholder="name@example.com"></label>
         <label class="field"><span>비밀번호</span><input name="password" required type="password" minlength="8" maxlength="72" autocomplete="{{if eq .Mode "setup"}}new-password{{else}}current-password{{end}}" placeholder="8자 이상 입력해 주세요"></label>

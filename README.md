@@ -39,11 +39,9 @@ docker compose up -d
 
 ## 환경 변수
 
-| 이름 | 기본값 |
-|---|---|---|
-| `PORT` | `8080` |
-| `DB_PATH` | `./data/submanager.db` |
-| `TZ` | `Asia/Seoul` |
+- PORT: `8080`
+- DB_PATH: `./data/submanager.db`
+- TZ: `Asia/Seoul`
 
 ## 사용 방법
 

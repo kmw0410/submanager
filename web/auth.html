@@ -22,6 +22,7 @@
       <p>관리자 계정으로 SubManager를 열어보세요.</p>
       {{end}}
       <form id="authForm" data-mode="{{.Mode}}">
+        {{if eq .Mode "setup"}}<label class="field"><span>최초 설정 키</span><input name="setupToken" required type="password" minlength="16" maxlength="128" autocomplete="off" placeholder="SETUP_TOKEN 값을 입력해 주세요"></label>{{end}}
         {{if eq .Mode "setup"}}<label class="field"><span>이름</span><input name="name" required maxlength="50" autocomplete="name" placeholder="이름을 입력해 주세요"></label>{{end}}
         <label class="field"><span>이메일</span><input name="email" required type="email" maxlength="254" autocomplete="email" placeholder="name@example.com"></label>
         <label class="field"><span>비밀번호</span><input name="password" required type="password" minlength="8" maxlength="72" autocomplete="{{if eq .Mode "setup"}}new-password{{else}}current-password{{end}}" placeholder="8자 이상 입력해 주세요"></label>
@@ -32,7 +33,7 @@
     </section>
   </main>
   <script>
-  (()=>{const form=document.querySelector('#authForm'),error=document.querySelector('#authError');form.addEventListener('submit',async e=>{e.preventDefault();error.textContent='';const button=form.querySelector('button');button.disabled=true;const data=new FormData(form),mode=form.dataset.mode;const body={email:data.get('email'),password:data.get('password')};if(mode==='setup')body.name=data.get('name');try{const res=await fetch(mode==='setup'?'/auth/setup':'/auth/login',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify(body)});const json=await res.json();if(!res.ok)throw new Error(json.error||'요청을 처리하지 못했어요.');location.replace('/')}catch(err){error.textContent=err.message;button.disabled=false}})})();
+  (()=>{const form=document.querySelector('#authForm'),error=document.querySelector('#authError');form.addEventListener('submit',async e=>{e.preventDefault();error.textContent='';const button=form.querySelector('button');button.disabled=true;const data=new FormData(form),mode=form.dataset.mode;const body={email:data.get('email'),password:data.get('password')};if(mode==='setup'){body.setupToken=data.get('setupToken');body.name=data.get('name')}try{const res=await fetch(mode==='setup'?'/auth/setup':'/auth/login',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify(body)});const json=await res.json();if(!res.ok)throw new Error(json.error||'요청을 처리하지 못했어요.');location.replace('/')}catch(err){error.textContent=err.message;button.disabled=false}})})();
   </script>
 </body>
 </html>

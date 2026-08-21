@@ -29,11 +29,14 @@
 
 ## 시작하기
 
-Docker을 사용하여 간편하게 시작할 수 있습니다. `docker-compose.yml`을 내려받아 다음 명령어를 실행하고 `http://IP주소:8080`으로 접속하세요.
+Docker을 사용하여 간편하게 시작할 수 있습니다. `docker-compose.yml`을 내려받고 최초 관리자 설정에 사용할 16자 이상의 임의 설정 키를 지정한 뒤 실행하세요.
 
 ```bash
+export SETUP_TOKEN='충분히-길고-임의적인-최초-설정-키'
 docker compose up -d
 ```
+
+처음 접속하면 위 `SETUP_TOKEN` 값을 **최초 설정 키**에 입력합니다. 관리자 생성이 끝난 기존 데이터베이스에서는 이 환경 변수가 없어도 실행할 수 있습니다. 설정 키는 최초 관리자 생성에만 사용되며 데이터베이스에 저장되지 않습니다.
 
 기본값은 `submanager-data` Docker 볼륨의 `/data/submanager.db`에 저장되며 필요한 경우 `submanager-data` 볼륨을 제거하고 호스트 맵핑으로 사용할 수 있습니다.
 
@@ -42,6 +45,7 @@ docker compose up -d
 - PORT: `8080`
 - DB_PATH: `./data/submanager.db`
 - TZ: `Asia/Seoul`
+- SETUP_TOKEN: 최초 설정 전 필수(16~128자), 관리자 생성 후 선택
 
 ## 사용 방법
 
@@ -97,6 +101,8 @@ docker compose config
 - SQLite는 foreign key, WAL 모드, 5초 busy timeout과 단일 연결로 실행됩니다.
 - 관리자 비밀번호는 bcrypt 해시로만 저장됩니다.
 - 로그인 토큰은 무작위로 생성되며 SHA-256 해시만 데이터베이스에 저장됩니다.
+- 로그인 실패는 IP와 계정 기준으로 제한되며 활성 로그인 세션은 최대 10개로 유지됩니다.
+- Discord Webhook은 공식 HTTPS 주소만 허용하고 알림 오류에 연동 비밀정보를 포함하지 않습니다.
 - 세션 쿠키는 `HttpOnly`, `SameSite=Strict`, 경로 `/`로 설정됩니다.
 - `/health`는 인증 없이 컨테이너 상태 확인에 사용할 수 있습니다.
 - 운영 환경에서는 HTTPS를 제공하는 리버스 프록시 뒤에서 실행하는 것을 권장합니다.

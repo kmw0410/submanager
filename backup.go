@@ -232,6 +232,21 @@ func (a *application) importData(w http.ResponseWriter, r *http.Request) {
 	if b.Version == 1 {
 		upgradeLegacyBackupAmounts(&b)
 	}
+	backupIncludesNotificationCredentials := b.Version < 3 || b.NotificationCredentialsIncluded
+	if backupIncludesNotificationCredentials {
+		var err error
+		b.Settings.DiscordWebhook, err = validateDiscordWebhook(b.Settings.DiscordWebhook)
+		if err != nil {
+			bad(w, "백업의 Discord Webhook 주소가 올바르지 않아요")
+			return
+		}
+		b.Settings.TelegramBotToken = strings.TrimSpace(b.Settings.TelegramBotToken)
+		b.Settings.TelegramChatID = strings.TrimSpace(b.Settings.TelegramChatID)
+		if err := validateTelegramCredentials(b.Settings.TelegramBotToken, b.Settings.TelegramChatID); err != nil {
+			bad(w, "백업의 Telegram 연동 정보가 올바르지 않아요")
+			return
+		}
+	}
 	tx, err := a.db.Begin()
 	if err != nil {
 		a.fail(w, err)
@@ -302,7 +317,6 @@ func (a *application) importData(w http.ResponseWriter, r *http.Request) {
 		b.Settings.Name,
 		b.Settings.Currency,
 	)
-	backupIncludesNotificationCredentials := b.Version < 3 || b.NotificationCredentialsIncluded
 	if err == nil && backupIncludesNotificationCredentials {
 		_, err = tx.Exec(`UPDATE notification_channels SET discord_webhook=?,telegram_bot_token=?,telegram_chat_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, b.Settings.DiscordWebhook, b.Settings.TelegramBotToken, b.Settings.TelegramChatID)
 	}

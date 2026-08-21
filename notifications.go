@@ -8,11 +8,61 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
+
+var (
+	discordWebhookPathPattern = regexp.MustCompile(`^/api/webhooks/[0-9]+/[A-Za-z0-9._-]+$`)
+	telegramBotTokenPattern   = regexp.MustCompile(`^[0-9]{1,20}:[A-Za-z0-9_-]{20,200}$`)
+)
+
+func validateDiscordWebhook(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Port() != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("invalid Discord webhook URL")
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host != "discord.com" && host != "discordapp.com" {
+		return "", errors.New("invalid Discord webhook host")
+	}
+	if !discordWebhookPathPattern.MatchString(parsed.EscapedPath()) {
+		return "", errors.New("invalid Discord webhook path")
+	}
+	return parsed.String(), nil
+}
+
+func validateTelegramCredentials(token, chat string) error {
+	token = strings.TrimSpace(token)
+	chat = strings.TrimSpace(chat)
+	if token != "" && !telegramBotTokenPattern.MatchString(token) {
+		return errors.New("invalid Telegram bot token")
+	}
+	if len(chat) > 128 {
+		return errors.New("invalid Telegram chat ID")
+	}
+	return nil
+}
+
+func (a *application) notificationClient() *http.Client {
+	if a.notificationHTTPClient != nil {
+		return a.notificationHTTPClient
+	}
+	return &http.Client{
+		Timeout: 8 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
 
 type upcomingNotification struct {
 	Days  int
@@ -109,7 +159,7 @@ func (a *application) testNotification(w http.ResponseWriter, r *http.Request) {
 			upcomingNotificationItem("테스트 결제항목 2", 990, "USD"),
 		},
 	}
-	client := &http.Client{Timeout: 8 * time.Second}
+	client := a.notificationClient()
 	var req *http.Request
 	var err error
 	if v.Channel == "discord" {
@@ -117,11 +167,20 @@ func (a *application) testNotification(w http.ResponseWriter, r *http.Request) {
 			bad(w, "Discord Webhook 주소를 입력해 주세요")
 			return
 		}
+		discord, err = validateDiscordWebhook(discord)
+		if err != nil {
+			bad(w, "Discord Webhook 주소를 확인해 주세요")
+			return
+		}
 		body, _ := json.Marshal(discordWebhookPayload(notification.plainText()))
 		req, err = http.NewRequest(http.MethodPost, discord, strings.NewReader(string(body)))
 	} else if v.Channel == "telegram" {
 		if token == "" || chat == "" {
 			bad(w, "Telegram Bot Token과 Chat ID를 입력해 주세요")
+			return
+		}
+		if err = validateTelegramCredentials(token, chat); err != nil {
+			bad(w, "Telegram Bot Token과 Chat ID를 확인해 주세요")
 			return
 		}
 		endpoint := "https://api.telegram.org/bot" + token + "/sendMessage"
@@ -138,13 +197,13 @@ func (a *application) testNotification(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		bad(w, "알림을 보내지 못했어요: "+err.Error())
+		bad(w, "알림을 보내지 못했어요")
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
-		bad(w, "알림 서비스가 요청을 거절했어요: "+string(b))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 500))
+		bad(w, "알림 서비스가 요청을 거절했어요")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -259,10 +318,18 @@ func (a *application) sendConfigured(notification upcomingNotification) error {
 	if err := a.db.QueryRow(`SELECT discord_webhook,telegram_bot_token,telegram_chat_id FROM notification_channels WHERE id=1`).Scan(&discord, &token, &chat); err != nil {
 		return err
 	}
-	client := &http.Client{Timeout: 8 * time.Second}
+	client := a.notificationClient()
 	sent := 0
 	var lastErr error
 	if discord != "" {
+		validatedDiscord, err := validateDiscordWebhook(discord)
+		if err != nil {
+			lastErr = errors.New("invalid Discord webhook configuration")
+		} else {
+			discord = validatedDiscord
+		}
+	}
+	if discord != "" && lastErr == nil {
 		body, _ := json.Marshal(discordWebhookPayload(notification.plainText()))
 		req, err := http.NewRequest(http.MethodPost, discord, strings.NewReader(string(body)))
 		if err == nil {
@@ -276,10 +343,16 @@ func (a *application) sendConfigured(notification upcomingNotification) error {
 					lastErr = errors.New("discord returned " + resp.Status)
 				}
 			} else {
-				lastErr = e
+				lastErr = errors.New("Discord notification request failed")
 			}
 		} else {
-			lastErr = err
+			lastErr = errors.New("invalid Discord notification request")
+		}
+	}
+	if token != "" && chat != "" {
+		if err := validateTelegramCredentials(token, chat); err != nil {
+			lastErr = errors.New("invalid Telegram notification configuration")
+			token = ""
 		}
 	}
 	if token != "" && chat != "" {
@@ -296,10 +369,10 @@ func (a *application) sendConfigured(notification upcomingNotification) error {
 					lastErr = errors.New("telegram returned " + resp.Status)
 				}
 			} else {
-				lastErr = e
+				lastErr = errors.New("Telegram notification request failed")
 			}
 		} else {
-			lastErr = err
+			lastErr = errors.New("invalid Telegram notification request")
 		}
 	}
 	if sent > 0 {

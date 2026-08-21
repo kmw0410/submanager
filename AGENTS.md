@@ -60,6 +60,7 @@ Typical runtime data path:
 ## 4. Critical Rules
 - Keep SQLite as the sole persistence layer unless a storage redesign is explicitly requested.
 - Preserve the single-administrator setup flow; do not add open registration.
+- Require the 16-to-128-character `SETUP_TOKEN` only until the first administrator is created; never store it in SQLite.
 - Never store administrator passwords or session tokens in plaintext.
 - Keep the browser UI dependency-free. Do not add React, Vue, a Node build, or a package manager unless explicitly requested.
 - Keep web assets in `web/` and embedded in the server binary. Update the `go:embed` pattern if new embedded asset locations are introduced.
@@ -128,6 +129,7 @@ Seed rules:
 - Generate session tokens with `crypto/rand` and store only their SHA-256 hash.
 - Session cookies must remain `HttpOnly`, `SameSite=Strict`, scoped to `/`, and expired on logout.
 - Preserve the current 30-day session expiration unless explicitly changed together with documentation and tests.
+- Keep login and setup failures rate-limited by both client IP and normalized account identity, and retain at most 10 active sessions.
 - Keep authenticated API routes behind `requireAuth`.
 - Do not include password hashes, raw session tokens, notification credentials, or authentication secrets in operational logs.
 
@@ -170,6 +172,7 @@ API rules:
 
 ## 11. Notifications
 - Supported delivery channels are Discord webhooks and Telegram bots.
+- Accept only official HTTPS Discord webhook URLs, do not follow provider redirects, and validate Telegram credentials before outbound requests.
 - Never log Discord webhook URLs, Telegram bot tokens, chat IDs, or complete outbound request URLs containing tokens.
 - Use bounded HTTP clients; preserve the current outbound timeout unless deliberately changed.
 - Read and discard only a bounded portion of provider responses before closing bodies.
@@ -200,6 +203,7 @@ Environment variables:
 | `PORT` | `8080` | HTTP listen port |
 | `DB_PATH` | `./data/submanager.db` locally, `/data/submanager.db` in the image | SQLite path |
 | `TZ` | `Asia/Seoul` | Billing and notification timezone |
+| `SETUP_TOKEN` | none | Required 16-to-128-character secret before the first administrator setup |
 
 Runtime rules:
 - Create the parent directory of `DB_PATH` before opening SQLite.

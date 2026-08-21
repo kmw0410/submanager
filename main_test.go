@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -27,7 +28,7 @@ func newTestApplication(t *testing.T) *application {
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
 	loc, _ := time.LoadLocation("Asia/Seoul")
-	a := &application{db: db, location: loc}
+	a := &application{db: db, location: loc, setupToken: "test-setup-token", authLimiter: newAttemptLimiter()}
 	if err := a.migrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -45,6 +46,12 @@ func jsonRequest(t *testing.T, method, target string, value any) (*http.Request,
 
 func compactSource(source string) string {
 	return strings.Join(strings.Fields(source), "")
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }
 
 func TestBuiltinSeedsAreIdempotent(t *testing.T) {
@@ -86,7 +93,7 @@ func TestBuiltinSeedsAreIdempotent(t *testing.T) {
 
 func TestFirstAccountIsAdminAndPasswordIsHashed(t *testing.T) {
 	a := newTestApplication(t)
-	r, w := jsonRequest(t, http.MethodPost, "/auth/setup", map[string]string{"name": "관리자", "email": "admin@example.com", "password": "safe-password"})
+	r, w := jsonRequest(t, http.MethodPost, "/auth/setup", map[string]string{"name": "관리자", "setupToken": "test-setup-token", "email": "admin@example.com", "password": "safe-password"})
 	a.setupAccount(w, r)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("setup status=%d body=%s", w.Code, w.Body.String())
@@ -102,16 +109,84 @@ func TestFirstAccountIsAdminAndPasswordIsHashed(t *testing.T) {
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte("safe-password")); err != nil {
 		t.Fatal(err)
 	}
-	r, w = jsonRequest(t, http.MethodPost, "/auth/setup", map[string]string{"name": "두 번째", "email": "two@example.com", "password": "safe-password"})
+	r, w = jsonRequest(t, http.MethodPost, "/auth/setup", map[string]string{"name": "두 번째", "setupToken": "test-setup-token", "email": "two@example.com", "password": "safe-password"})
 	a.setupAccount(w, r)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("second setup status=%d", w.Code)
 	}
 }
 
+func TestFirstAccountRequiresSetupToken(t *testing.T) {
+	a := newTestApplication(t)
+	r, w := jsonRequest(t, http.MethodPost, "/auth/setup", map[string]string{
+		"name": "관리자", "email": "admin@example.com", "password": "safe-password", "setupToken": "wrong-setup-token",
+	})
+	a.setupAccount(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("wrong setup token status=%d body=%s", w.Code, w.Body.String())
+	}
+	var count int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM users WHERE id=1 AND password_hash<>''`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatal("administrator was created with an invalid setup token")
+	}
+}
+
+func TestLoginRateLimitAndSuccessfulReset(t *testing.T) {
+	a := newTestApplication(t)
+	setupRequest, setupRecorder := jsonRequest(t, http.MethodPost, "/auth/setup", map[string]string{
+		"name": "관리자", "setupToken": "test-setup-token", "email": "admin@example.com", "password": "safe-password",
+	})
+	a.setupAccount(setupRecorder, setupRequest)
+
+	for i := 0; i < authAttemptLimit; i++ {
+		request, recorder := jsonRequest(t, http.MethodPost, "/auth/login", map[string]string{"email": "admin@example.com", "password": "wrong-password"})
+		a.login(recorder, request)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("failed login %d status=%d body=%s", i+1, recorder.Code, recorder.Body.String())
+		}
+	}
+	request, recorder := jsonRequest(t, http.MethodPost, "/auth/login", map[string]string{"email": "admin@example.com", "password": "safe-password"})
+	a.login(recorder, request)
+	if recorder.Code != http.StatusTooManyRequests || recorder.Header().Get("Retry-After") == "" {
+		t.Fatalf("rate-limited login status=%d retry-after=%q", recorder.Code, recorder.Header().Get("Retry-After"))
+	}
+
+	a.authLimiter.now = func() time.Time { return time.Now().Add(authAttemptWindow) }
+	request, recorder = jsonRequest(t, http.MethodPost, "/auth/login", map[string]string{"email": "admin@example.com", "password": "safe-password"})
+	a.login(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("login after rate-limit window status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestActiveSessionsAreCapped(t *testing.T) {
+	a := newTestApplication(t)
+	setupRequest, setupRecorder := jsonRequest(t, http.MethodPost, "/auth/setup", map[string]string{
+		"name": "관리자", "setupToken": "test-setup-token", "email": "admin@example.com", "password": "safe-password",
+	})
+	a.setupAccount(setupRecorder, setupRequest)
+	for i := 0; i < maxActiveSessions+3; i++ {
+		request := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+		request.Header.Set("User-Agent", "session-"+strconv.Itoa(i))
+		if err := a.createSession(httptest.NewRecorder(), request, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var count int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE user_id=1`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != maxActiveSessions {
+		t.Fatalf("active sessions=%d want=%d", count, maxActiveSessions)
+	}
+}
+
 func TestAdministratorCanChangeEmail(t *testing.T) {
 	a := newTestApplication(t)
-	setupRequest, setupRecorder := jsonRequest(t, http.MethodPost, "/auth/setup", map[string]string{"name": "관리자", "email": "admin@example.com", "password": "safe-password"})
+	setupRequest, setupRecorder := jsonRequest(t, http.MethodPost, "/auth/setup", map[string]string{"name": "관리자", "setupToken": "test-setup-token", "email": "admin@example.com", "password": "safe-password"})
 	a.setupAccount(setupRecorder, setupRequest)
 	if setupRecorder.Code != http.StatusCreated || len(setupRecorder.Result().Cookies()) != 1 {
 		t.Fatalf("setup status=%d cookies=%d", setupRecorder.Code, len(setupRecorder.Result().Cookies()))
@@ -149,7 +224,7 @@ func TestAdministratorCanChangeEmail(t *testing.T) {
 
 func TestAdministratorCanChangePasswordAndRotateSessions(t *testing.T) {
 	a := newTestApplication(t)
-	setupRequest, setupRecorder := jsonRequest(t, http.MethodPost, "/auth/setup", map[string]string{"name": "관리자", "email": "admin@example.com", "password": "safe-password"})
+	setupRequest, setupRecorder := jsonRequest(t, http.MethodPost, "/auth/setup", map[string]string{"name": "관리자", "setupToken": "test-setup-token", "email": "admin@example.com", "password": "safe-password"})
 	a.setupAccount(setupRecorder, setupRequest)
 	oldCookie := setupRecorder.Result().Cookies()[0]
 
@@ -191,7 +266,7 @@ func TestAdministratorCanChangePasswordAndRotateSessions(t *testing.T) {
 
 func TestAdministratorCanManageOtherSessions(t *testing.T) {
 	a := newTestApplication(t)
-	setupRequest, setupRecorder := jsonRequest(t, http.MethodPost, "/auth/setup", map[string]string{"name": "관리자", "email": "admin@example.com", "password": "safe-password"})
+	setupRequest, setupRecorder := jsonRequest(t, http.MethodPost, "/auth/setup", map[string]string{"name": "관리자", "setupToken": "test-setup-token", "email": "admin@example.com", "password": "safe-password"})
 	setupRequest.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0) Chrome/127.0")
 	a.setupAccount(setupRecorder, setupRequest)
 	if setupRecorder.Code != http.StatusCreated {
@@ -469,9 +544,9 @@ func TestJSONExportImportRoundTrip(t *testing.T) {
 func TestBackupNotificationCredentialsAreOptional(t *testing.T) {
 	a := newTestApplication(t)
 	const (
-		discordWebhook = "https://discord.example/secret-webhook"
-		telegramToken  = "secret-bot-token"
-		telegramChatID = "secret-chat-id"
+		discordWebhook = "https://discord.com/api/webhooks/123456789012345678/secret_webhook_token"
+		telegramToken  = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+		telegramChatID = "-1001234567890"
 	)
 	if _, err := a.db.Exec(
 		`UPDATE notification_channels SET discord_webhook=?,telegram_bot_token=?,telegram_chat_id=? WHERE id=1`,
@@ -501,9 +576,9 @@ func TestBackupNotificationCredentialsAreOptional(t *testing.T) {
 	}
 
 	const (
-		preservedWebhook = "https://discord.example/preserved"
-		preservedToken   = "preserved-token"
-		preservedChatID  = "preserved-chat"
+		preservedWebhook = "https://discord.com/api/webhooks/987654321098765432/preserved_webhook_token"
+		preservedToken   = "987654321:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+		preservedChatID  = "123456789"
 	)
 	if _, err := a.db.Exec(
 		`UPDATE notification_channels SET discord_webhook=?,telegram_bot_token=?,telegram_chat_id=? WHERE id=1`,
@@ -960,5 +1035,45 @@ func TestUpcomingNotificationItemsIncludePrices(t *testing.T) {
 	embeds, ok := payload["embeds"].([]map[string]any)
 	if !ok || len(embeds) != 1 || embeds[0]["title"] != "🔔 결제 예정" {
 		t.Fatalf("Discord upcoming notification must be an embed: %#v", payload)
+	}
+}
+
+func TestNotificationDestinationsAreRestricted(t *testing.T) {
+	valid := "https://discord.com/api/webhooks/123456789012345678/secret_webhook_token"
+	if got, err := validateDiscordWebhook(valid); err != nil || got != valid {
+		t.Fatalf("valid Discord webhook rejected: got=%q err=%v", got, err)
+	}
+	for _, value := range []string{
+		"http://discord.com/api/webhooks/123/token",
+		"https://127.0.0.1/api/webhooks/123/token",
+		"https://discord.com.evil.example/api/webhooks/123/token",
+		"https://discord.com/api/webhooks/123/token?redirect=http://127.0.0.1",
+	} {
+		if _, err := validateDiscordWebhook(value); err == nil {
+			t.Fatalf("unsafe Discord webhook accepted: %q", value)
+		}
+	}
+	if err := validateTelegramCredentials("not-a-token", "1234"); err == nil {
+		t.Fatal("invalid Telegram token was accepted")
+	}
+}
+
+func TestNotificationErrorsDoNotExposeTelegramToken(t *testing.T) {
+	a := newTestApplication(t)
+	const token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+	a.notificationHTTPClient = &http.Client{
+		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			return nil, errors.New("dial failed for " + request.URL.String())
+		}),
+	}
+	request, recorder := jsonRequest(t, http.MethodPost, "/api/notifications/test", map[string]string{
+		"channel": "telegram", "telegramBotToken": token, "telegramChatID": "123456789",
+	})
+	a.testNotification(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("notification test status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), token) {
+		t.Fatalf("Telegram token leaked in error response: %s", recorder.Body.String())
 	}
 }

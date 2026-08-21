@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"embed"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"net"
 	"net/http"
 	"net/mail"
 	"os"
@@ -21,6 +23,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -32,10 +35,73 @@ import (
 var webFS embed.FS
 
 type application struct {
-	db       *sql.DB
-	tpl      *template.Template
-	authTpl  *template.Template
-	location *time.Location
+	db                     *sql.DB
+	tpl                    *template.Template
+	authTpl                *template.Template
+	location               *time.Location
+	setupToken             string
+	authLimiter            *attemptLimiter
+	notificationHTTPClient *http.Client
+}
+
+const (
+	authAttemptLimit  = 5
+	authAttemptWindow = 15 * time.Minute
+	maxActiveSessions = 10
+)
+
+type attemptState struct {
+	count       int
+	windowStart time.Time
+}
+
+type attemptLimiter struct {
+	mu       sync.Mutex
+	attempts map[string]attemptState
+	now      func() time.Time
+}
+
+func newAttemptLimiter() *attemptLimiter {
+	return &attemptLimiter{attempts: make(map[string]attemptState), now: time.Now}
+}
+
+func (l *attemptLimiter) allowed(keys ...string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	for _, key := range keys {
+		state, ok := l.attempts[key]
+		if ok && now.Sub(state.windowStart) >= authAttemptWindow {
+			delete(l.attempts, key)
+			continue
+		}
+		if ok && state.count >= authAttemptLimit {
+			return false
+		}
+	}
+	return true
+}
+
+func (l *attemptLimiter) failure(keys ...string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	for _, key := range keys {
+		state, ok := l.attempts[key]
+		if !ok || now.Sub(state.windowStart) >= authAttemptWindow {
+			state = attemptState{windowStart: now}
+		}
+		state.count++
+		l.attempts[key] = state
+	}
+}
+
+func (l *attemptLimiter) reset(keys ...string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, key := range keys {
+		delete(l.attempts, key)
+	}
 }
 
 type service struct {
@@ -159,11 +225,23 @@ func main() {
 	if err != nil {
 		loc = time.FixedZone("Asia/Seoul", 9*60*60)
 	}
-	app := &application{db: db, location: loc}
+	app := &application{
+		db:          db,
+		location:    loc,
+		setupToken:  env("SETUP_TOKEN", ""),
+		authLimiter: newAttemptLimiter(),
+	}
 	app.tpl = template.Must(template.New("index.html").ParseFS(webFS, "web/index.html"))
 	app.authTpl = template.Must(template.New("auth.html").ParseFS(webFS, "web/auth.html"))
 	if err := app.migrate(); err != nil {
 		log.Fatal(err)
+	}
+	accountExists, err := app.accountExists()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if !accountExists && (len(app.setupToken) < 16 || len(app.setupToken) > 128) {
+		log.Fatal("SETUP_TOKEN must contain 16 to 128 characters before the first administrator setup")
 	}
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
@@ -569,8 +647,16 @@ func (a *application) accountExists() (bool, error) {
 }
 
 type authInput struct {
-	Name, Email, Password string
+	Name, Email, Password, SetupToken string
 }
+
+var dummyPasswordHash = func() []byte {
+	hash, err := bcrypt.GenerateFromPassword([]byte("submanager-dummy-password"), bcrypt.DefaultCost)
+	if err != nil {
+		panic(err)
+	}
+	return hash
+}()
 
 func validateAuth(v authInput, setup bool) error {
 	if setup && (strings.TrimSpace(v.Name) == "" || len([]rune(strings.TrimSpace(v.Name))) > 50) {
@@ -606,6 +692,11 @@ func (a *application) setupAccount(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &v) || !validOrError(w, validateAuth(v, true)) {
 		return
 	}
+	keys := authAttemptKeys(r, v.Email, "setup")
+	if !a.authLimiter.allowed(keys...) {
+		authRateLimited(w)
+		return
+	}
 	exists, err := a.accountExists()
 	if err != nil {
 		a.fail(w, err)
@@ -613,6 +704,11 @@ func (a *application) setupAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if exists {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "관리자 계정이 이미 설정되어 있어요"})
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(v.SetupToken), []byte(a.setupToken)) != 1 {
+		a.authLimiter.failure(keys...)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "최초 설정 키를 확인해 주세요"})
 		return
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(v.Password), bcrypt.DefaultCost)
@@ -634,6 +730,7 @@ func (a *application) setupAccount(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
+	a.authLimiter.reset(keys...)
 	writeJSON(w, http.StatusCreated, map[string]bool{"ok": true})
 }
 
@@ -642,10 +739,21 @@ func (a *application) login(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &v) {
 		return
 	}
+	keys := authAttemptKeys(r, v.Email, "login")
+	if !a.authLimiter.allowed(keys...) {
+		authRateLimited(w)
+		return
+	}
 	var id int64
-	var hash string
+	hash := string(dummyPasswordHash)
 	err := a.db.QueryRow(`SELECT id,password_hash FROM users WHERE email=? AND password_hash<>''`, strings.ToLower(strings.TrimSpace(v.Email))).Scan(&id, &hash)
-	if err != nil || bcrypt.CompareHashAndPassword([]byte(hash), []byte(v.Password)) != nil {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		a.fail(w, err)
+		return
+	}
+	passwordMatches := bcrypt.CompareHashAndPassword([]byte(hash), []byte(v.Password)) == nil
+	if errors.Is(err, sql.ErrNoRows) || !passwordMatches {
+		a.authLimiter.failure(keys...)
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "이메일 또는 비밀번호가 맞지 않아요"})
 		return
 	}
@@ -653,7 +761,25 @@ func (a *application) login(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
+	a.authLimiter.reset(keys...)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func authAttemptKeys(r *http.Request, email, scope string) []string {
+	host := r.RemoteAddr
+	if parsed, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		host = parsed
+	}
+	emailHash := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email))))
+	return []string{
+		scope + ":ip:" + host,
+		scope + ":email:" + hex.EncodeToString(emailHash[:]),
+	}
+}
+
+func authRateLimited(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", strconv.Itoa(int(authAttemptWindow/time.Second)))
+	writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "로그인 시도가 너무 많아요. 잠시 후 다시 시도해 주세요"})
 }
 
 func (a *application) createSession(w http.ResponseWriter, r *http.Request, userID int64) error {
@@ -661,12 +787,30 @@ func (a *application) createSession(w http.ResponseWriter, r *http.Request, user
 	if err != nil {
 		return err
 	}
-	_, _ = a.db.Exec(`DELETE FROM sessions WHERE expires_at<=?`, time.Now().UTC().Format(time.RFC3339))
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM sessions WHERE expires_at<=?`, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`DELETE FROM sessions WHERE user_id=? AND id NOT IN (SELECT id FROM sessions WHERE user_id=? ORDER BY created_at DESC,id DESC LIMIT ?)`,
+		userID,
+		userID,
+		maxActiveSessions-1,
+	); err != nil {
+		return err
+	}
 	userAgent := strings.TrimSpace(r.UserAgent())
 	if len(userAgent) > 512 {
 		userAgent = userAgent[:512]
 	}
-	if _, err := a.db.Exec(`INSERT INTO sessions(user_id,token_hash,expires_at,created_at,user_agent) VALUES(?,?,?,?,?)`, userID, tokenHash, expires.Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339), userAgent); err != nil {
+	if _, err := tx.Exec(`INSERT INTO sessions(user_id,token_hash,expires_at,created_at,user_agent) VALUES(?,?,?,?,?)`, userID, tokenHash, expires.Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339), userAgent); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
 		return err
 	}
 	setSessionCookie(w, r, token, expires)
@@ -1602,6 +1746,18 @@ func (a *application) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if v.NotifyDays < 0 || v.NotifyDays > 30 {
 		bad(w, "알림 날짜는 0~30일 사이로 입력해 주세요")
+		return
+	}
+	var err error
+	v.DiscordWebhook, err = validateDiscordWebhook(v.DiscordWebhook)
+	if err != nil {
+		bad(w, "Discord Webhook 주소를 확인해 주세요")
+		return
+	}
+	v.TelegramBotToken = strings.TrimSpace(v.TelegramBotToken)
+	v.TelegramChatID = strings.TrimSpace(v.TelegramChatID)
+	if err := validateTelegramCredentials(v.TelegramBotToken, v.TelegramChatID); err != nil {
+		bad(w, "Telegram Bot Token과 Chat ID를 확인해 주세요")
 		return
 	}
 	v.Currency = strings.ToUpper(strings.TrimSpace(v.Currency))

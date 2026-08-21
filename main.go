@@ -124,6 +124,25 @@ type appState struct {
 	Stats          dashboardStats   `json:"stats"`
 }
 
+type paymentOccurrence struct {
+	SubscriptionID    int64  `json:"subscriptionId"`
+	ServiceName       string `json:"serviceName"`
+	Color             string `json:"color"`
+	Amount            int64  `json:"amount"`
+	Currency          string `json:"currency"`
+	ScheduledDate     string `json:"scheduledDate"`
+	PaymentMethodName string `json:"paymentMethodName"`
+	BillingCycle      string `json:"billingCycle"`
+	Skipped           bool   `json:"skipped"`
+	FirstPayment      bool   `json:"firstPayment"`
+}
+
+type upcomingMonth struct {
+	Period string              `json:"period"`
+	Items  []paymentOccurrence `json:"items"`
+	Totals map[string]int64    `json:"totals"`
+}
+
 func main() {
 	dbPath := env("DB_PATH", "./data/submanager.db")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
@@ -158,6 +177,7 @@ func main() {
 	mux.HandleFunc("POST /auth/login", app.login)
 	mux.HandleFunc("POST /auth/logout", app.requireAuth(app.logout))
 	mux.HandleFunc("GET /api/state", app.requireAuth(app.getState))
+	mux.HandleFunc("GET /api/upcoming", app.requireAuth(app.getUpcomingMonth))
 	mux.HandleFunc("POST /api/subscriptions", app.requireAuth(app.createSubscription))
 	mux.HandleFunc("PUT /api/subscriptions/{id}", app.requireAuth(app.updateSubscription))
 	mux.HandleFunc("POST /api/subscriptions/{id}/skip", app.requireAuth(app.skipSubscription))
@@ -1138,9 +1158,17 @@ func (a *application) loadSubscriptions() ([]subscription, error) {
 }
 
 func (a *application) monthTotals(period string) (map[string]int64, error) {
-	y, m, err := parsePeriod(period)
+	month, err := a.loadPaymentOccurrences(period)
 	if err != nil {
 		return nil, err
+	}
+	return month.Totals, nil
+}
+
+func (a *application) loadPaymentOccurrences(period string) (upcomingMonth, error) {
+	y, m, err := parsePeriod(period)
+	if err != nil {
+		return upcomingMonth{}, err
 	}
 	type pricePoint struct {
 		amount                  int64
@@ -1149,42 +1177,42 @@ func (a *application) monthTotals(period string) (map[string]int64, error) {
 	history := map[int][]pricePoint{}
 	historyRows, err := a.db.Query(`SELECT subscription_id,amount,currency,effective_from FROM subscription_price_history ORDER BY subscription_id,effective_from,id`)
 	if err != nil {
-		return nil, err
+		return upcomingMonth{}, err
 	}
 	for historyRows.Next() {
 		var id int
 		var point pricePoint
 		if err := historyRows.Scan(&id, &point.amount, &point.currency, &point.effectiveFrom); err != nil {
 			historyRows.Close()
-			return nil, err
+			return upcomingMonth{}, err
 		}
 		history[id] = append(history[id], point)
 	}
 	if err := historyRows.Close(); err != nil {
-		return nil, err
+		return upcomingMonth{}, err
 	}
 	last := time.Date(y, m+1, 0, 0, 0, 0, 0, a.location).Day()
-	rows, err := a.db.Query(`SELECT s.id,s.amount,s.currency,s.billing_cycle,s.billing_day,COALESCE(NULLIF(s.billing_anchor,''),s.started_at),COALESCE(s.cancelled_at,''),COALESCE(o.skipped,0),o.amount,o.currency FROM subscriptions s LEFT JOIN subscription_occurrences o ON o.subscription_id=s.id AND o.period=?`, period)
+	rows, err := a.db.Query(`SELECT s.id,s.service_name,s.color,s.amount,s.currency,s.billing_cycle,s.billing_day,COALESCE(NULLIF(s.billing_anchor,''),s.started_at),COALESCE(s.cancelled_at,''),COALESCE(s.trial_ends_at,''),p.name,COALESCE(o.skipped,0),o.amount,o.currency FROM subscriptions s JOIN payment_methods p ON p.id=s.payment_method_id LEFT JOIN subscription_occurrences o ON o.subscription_id=s.id AND o.period=?`, period)
 	if err != nil {
-		return nil, err
+		return upcomingMonth{}, err
 	}
 	defer rows.Close()
-	totals := map[string]int64{}
+	month := upcomingMonth{Period: period, Items: []paymentOccurrence{}, Totals: map[string]int64{}}
 	for rows.Next() {
 		var id, day int
 		var amount int64
-		var currency, cycle, anchor, cancelled string
+		var serviceName, color, currency, cycle, anchor, cancelled, trialEndsAt, paymentMethodName string
 		var skipped bool
 		var occurrenceAmount sql.NullInt64
 		var occurrenceCurrency sql.NullString
-		if err := rows.Scan(&id, &amount, &currency, &cycle, &day, &anchor, &cancelled, &skipped, &occurrenceAmount, &occurrenceCurrency); err != nil {
-			return nil, err
-		}
-		if skipped {
-			continue
+		if err := rows.Scan(&id, &serviceName, &color, &amount, &currency, &cycle, &day, &anchor, &cancelled, &trialEndsAt, &paymentMethodName, &skipped, &occurrenceAmount, &occurrenceCurrency); err != nil {
+			return upcomingMonth{}, err
 		}
 		billDate := time.Date(y, m, min(day, last), 0, 0, 0, 0, a.location)
-		billingAnchor, _ := time.ParseInLocation("2006-01-02", anchor[:10], a.location)
+		billingAnchor, parseErr := time.ParseInLocation("2006-01-02", anchor[:10], a.location)
+		if parseErr != nil {
+			continue
+		}
 		if billDate.Before(billingAnchor) {
 			continue
 		}
@@ -1213,9 +1241,51 @@ func (a *application) monthTotals(period string) (map[string]int64, error) {
 				}
 			}
 		}
-		totals[strings.ToUpper(currency)] += amount
+		currency = strings.ToUpper(currency)
+		month.Items = append(month.Items, paymentOccurrence{
+			SubscriptionID:    int64(id),
+			ServiceName:       serviceName,
+			Color:             color,
+			Amount:            amount,
+			Currency:          currency,
+			ScheduledDate:     billDate.Format("2006-01-02"),
+			PaymentMethodName: paymentMethodName,
+			BillingCycle:      cycle,
+			Skipped:           skipped,
+			FirstPayment:      trialEndsAt != "" && billDate.Equal(billingAnchor),
+		})
+		if !skipped {
+			month.Totals[currency] += amount
+		}
 	}
-	return totals, rows.Err()
+	if err := rows.Err(); err != nil {
+		return upcomingMonth{}, err
+	}
+	sort.SliceStable(month.Items, func(i, j int) bool {
+		if month.Items[i].ScheduledDate == month.Items[j].ScheduledDate {
+			return month.Items[i].ServiceName < month.Items[j].ServiceName
+		}
+		return month.Items[i].ScheduledDate < month.Items[j].ScheduledDate
+	})
+	return month, nil
+}
+
+func (a *application) getUpcomingMonth(w http.ResponseWriter, r *http.Request) {
+	period := strings.TrimSpace(r.URL.Query().Get("month"))
+	if len(period) != 7 {
+		bad(w, "조회할 연월을 YYYY-MM 형식으로 입력해 주세요")
+		return
+	}
+	if _, _, err := parsePeriod(period); err != nil {
+		bad(w, "조회할 연월을 YYYY-MM 형식으로 입력해 주세요")
+		return
+	}
+	month, err := a.loadPaymentOccurrences(period)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, month)
 }
 
 type subInput struct {

@@ -5,6 +5,12 @@
   let selectedCurrency = "all";
   let subscriptionQuery = "";
   let subscriptionCategory = "";
+  let upcomingView = "list";
+  const currentMonth = new Date();
+  let calendarYear = currentMonth.getFullYear();
+  let calendarMonth = currentMonth.getMonth();
+  const upcomingMonths = new Map();
+  let upcomingRequest = 0;
   const main = document.querySelector("#main");
   const backdrop = document.querySelector("#modalBackdrop");
   const modal = backdrop.querySelector(".modal");
@@ -61,6 +67,7 @@
       /[&<>'"]/g,
       (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[c]),
     );
+  const serviceColor = (value) => /^#[0-9a-f]{6}$/i.test(value || "") ? value : "#9AB8A8";
   const currencyDigits = (currency) =>
     state.currencies?.find((c) => c.code === currency)?.digits ?? 2;
   const amountValue = (value, currency) =>
@@ -441,6 +448,10 @@
   }
 
   function renderUpcoming() {
+    if (upcomingView === "calendar") {
+      renderUpcomingCalendar();
+      return;
+    }
     const subs = activeSubs().filter((s) => !s.Skipped).sort((a, b) =>
       a.NextPayment.localeCompare(b.NextPayment)
     );
@@ -460,12 +471,131 @@
 
     main.innerHTML = `
       <div class="page">
-        <section class="welcome">
-          <h1>결제 예정</h1>
-          <p>가까운 결제부터 차례로 알려드려요.</p>
+        <section class="welcome upcoming-head">
+          <div>
+            <h1>결제 예정</h1>
+            <p>가까운 결제부터 차례로 알려드려요.</p>
+          </div>
+          ${upcomingViewSwitcher()}
         </section>
         <div class="upcoming-groups">${content}</div>
       </div>`;
+  }
+
+  function upcomingViewSwitcher() {
+    return `<div class="view-switcher" aria-label="결제 예정 보기 방식">
+      <button type="button" data-upcoming-view="list" aria-pressed="${upcomingView === "list"}" class="${upcomingView === "list" ? "active" : ""}">목록</button>
+      <button type="button" data-upcoming-view="calendar" aria-pressed="${upcomingView === "calendar"}" class="${upcomingView === "calendar" ? "active" : ""}">캘린더</button>
+    </div>`;
+  }
+
+  const calendarPeriod = () =>
+    `${calendarYear}-${String(calendarMonth + 1).padStart(2, "0")}`;
+
+  function renderUpcomingCalendar() {
+    const period = calendarPeriod();
+    const month = upcomingMonths.get(period);
+    main.innerHTML = `
+      <div class="page">
+        <section class="welcome upcoming-head">
+          <div>
+            <h1>결제 예정</h1>
+            <p>결제가 있는 날을 월별로 확인해 보세요.</p>
+          </div>
+          ${upcomingViewSwitcher()}
+        </section>
+        <section class="calendar-card" aria-label="${calendarYear}년 ${calendarMonth + 1}월 결제 예정 캘린더">
+          <div class="calendar-toolbar">
+            <div>
+              <h2>${calendarYear}년 ${calendarMonth + 1}월</h2>
+              <p>${month ? calendarSummary(month) : "결제 일정을 불러오는 중이에요."}</p>
+            </div>
+            <div class="calendar-actions">
+              <button class="icon-button" type="button" data-calendar-move="-1" aria-label="이전 달 보기"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg></button>
+              <button class="button ghost small" type="button" data-calendar-today aria-label="현재 월 보기">오늘</button>
+              <button class="icon-button" type="button" data-calendar-move="1" aria-label="다음 달 보기"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button>
+            </div>
+          </div>
+          ${month ? calendarGrid(month) : `<div class="calendar-loading" aria-live="polite">불러오는 중…</div>`}
+        </section>
+      </div>`;
+    if (!month) loadUpcomingMonth(period);
+  }
+
+  async function loadUpcomingMonth(period) {
+    const request = ++upcomingRequest;
+    try {
+      const month = await api(`/api/upcoming?month=${encodeURIComponent(period)}`);
+      upcomingMonths.set(period, month);
+      if (request === upcomingRequest && currentView === "upcoming" && upcomingView === "calendar" && period === calendarPeriod()) {
+        renderUpcomingCalendar();
+      }
+    } catch (err) {
+      if (request === upcomingRequest) {
+        toast(err.message, true);
+        document.querySelector(".calendar-loading")?.replaceChildren("결제 일정을 불러오지 못했어요.");
+      }
+    }
+  }
+
+  function calendarSummary(month) {
+    const payable = month.items.filter((item) => !item.skipped);
+    const totals = Object.entries(month.totals)
+      .filter(([, amount]) => amount > 0)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([currency, amount]) => money(amount, currency));
+    return `${payable.length}건${totals.length ? ` · ${totals.join(" / ")}` : ""}`;
+  }
+
+  function calendarGrid(month) {
+    const itemsByDate = Object.groupBy
+      ? Object.groupBy(month.items, (item) => item.scheduledDate)
+      : month.items.reduce((groups, item) => {
+        (groups[item.scheduledDate] ??= []).push(item);
+        return groups;
+      }, {});
+    const first = new Date(calendarYear, calendarMonth, 1);
+    const gridStart = new Date(calendarYear, calendarMonth, 1 - first.getDay());
+    const todayText = localDate();
+    const cells = [];
+    for (let index = 0; index < 42; index++) {
+      const date = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + index);
+      const dateText = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+      const items = itemsByDate[dateText] || [];
+      const inMonth = date.getMonth() === calendarMonth;
+      const classes = ["calendar-day"];
+      if (!inMonth) classes.push("outside");
+      if (dateText === todayText) classes.push("today");
+      if (dateText < todayText) classes.push("past");
+      if (items.length) classes.push("has-payments");
+      const label = `${date.getFullYear()}년 ${date.getMonth() + 1}월 ${date.getDate()}일${items.length ? `, 결제 예정 ${items.length}건` : ""}`;
+      cells.push(`<button type="button" class="${classes.join(" ")}" ${items.length ? `data-calendar-date="${dateText}"` : ""} aria-label="${label}">
+        <span class="calendar-date">${date.getDate()}</span>
+        ${items.length ? `<span class="payment-dots" aria-hidden="true">${items.slice(0, 3).map((item) => `<i style="--dot:${serviceColor(item.color)}"></i>`).join("")}</span>` : ""}
+      </button>`);
+    }
+    return `<div class="calendar-grid">
+      ${["일", "월", "화", "수", "목", "금", "토"].map((day) => `<span class="calendar-weekday" aria-hidden="true">${day}</span>`).join("")}
+      ${cells.join("")}
+    </div>`;
+  }
+
+  function openCalendarDate(dateText) {
+    const month = upcomingMonths.get(calendarPeriod());
+    const items = month?.items.filter((item) => item.scheduledDate === dateText) || [];
+    if (!items.length) return;
+    const [, monthNumber, day] = dateText.split("-").map(Number);
+    openModal(`${monthNumber}월 ${day}일 결제 예정`, `${dateText.slice(0, 4)}년 · ${items.length}건`);
+    modalBody.innerHTML = `<div class="calendar-payment-list">${items.map((item) => `
+      <article class="calendar-payment ${item.skipped ? "skipped" : ""}">
+        <span class="calendar-payment-mark" style="--service-color:${serviceColor(item.color)}"></span>
+        <span>
+          <strong>${esc(item.serviceName)}</strong>
+          <small>${esc(item.paymentMethodName)} · ${item.billingCycle === "yearly" ? "연간" : "월간"}${item.firstPayment ? " · 무료 체험 후 첫 결제" : ""}</small>
+          ${item.skipped ? `<em>이번 결제 건너뜀</em>` : ""}
+        </span>
+        <b>${esc(money(item.amount, item.currency))}</b>
+      </article>`).join("")}</div>`;
   }
 
   function upcomingRow(subscription) {
@@ -1523,6 +1653,7 @@
   }
   async function refresh() {
     state = await api("/api/state");
+    upcomingMonths.clear();
     render();
   }
   function toast(message, error = false) {
@@ -1534,6 +1665,32 @@
   }
 
   document.addEventListener("click", (e) => {
+    const upcomingSwitch = e.target.closest("[data-upcoming-view]");
+    if (upcomingSwitch) {
+      upcomingView = upcomingSwitch.dataset.upcomingView;
+      renderUpcoming();
+      return;
+    }
+    const calendarMove = e.target.closest("[data-calendar-move]");
+    if (calendarMove) {
+      const next = new Date(calendarYear, calendarMonth + Number(calendarMove.dataset.calendarMove), 1);
+      calendarYear = next.getFullYear();
+      calendarMonth = next.getMonth();
+      renderUpcomingCalendar();
+      return;
+    }
+    if (e.target.closest("[data-calendar-today]")) {
+      const now = new Date();
+      calendarYear = now.getFullYear();
+      calendarMonth = now.getMonth();
+      renderUpcomingCalendar();
+      return;
+    }
+    const calendarDate = e.target.closest("[data-calendar-date]");
+    if (calendarDate) {
+      openCalendarDate(calendarDate.dataset.calendarDate);
+      return;
+    }
     const category = e.target.closest("[data-sub-category]");
     if (category) {
       subscriptionCategory = category.dataset.subCategory;

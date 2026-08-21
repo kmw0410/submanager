@@ -351,6 +351,75 @@ func TestPriceHistoryKeepsPastMonthsStable(t *testing.T) {
 	}
 }
 
+func TestPaymentOccurrencesReuseBillingHistoryAndOccurrenceState(t *testing.T) {
+	a := newTestApplication(t)
+	var paymentID int64
+	var paymentName string
+	if err := a.db.QueryRow(`SELECT id,name FROM payment_methods WHERE is_builtin=1 ORDER BY id LIMIT 1`).Scan(&paymentID, &paymentName); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := a.db.Exec(`INSERT INTO subscriptions(service_name,color,amount,currency,billing_cycle,billing_day,billing_anchor,payment_method_id,started_at) VALUES('Discord Nitro','#5865F2',1000,'USD','monthly',24,'2026-07-24',?,'2026-07-01')`, paymentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	monthlyID, _ := result.LastInsertId()
+	if _, err = a.db.Exec(`INSERT INTO subscription_price_history(subscription_id,amount,currency,effective_from) VALUES(?,900,'USD','2026-07-01'),(?,1000,'USD','2026-09-01')`, monthlyID, monthlyID); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err = a.db.Exec(`INSERT INTO subscriptions(service_name,color,amount,currency,billing_cycle,billing_day,billing_anchor,payment_method_id,started_at,trial_ends_at) VALUES('첫 결제','#9AB8A8',17000,'KRW','monthly',31,'2026-08-31',?,'2026-08-01','2026-08-30')`, paymentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trialID, _ := result.LastInsertId()
+	if _, err = a.db.Exec(`INSERT INTO subscription_price_history(subscription_id,amount,currency,effective_from) VALUES(?,17000,'KRW','2026-08-01')`, trialID); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err = a.db.Exec(`INSERT INTO subscriptions(service_name,amount,currency,billing_cycle,billing_day,billing_anchor,payment_method_id,started_at) VALUES('건너뜀',4900,'KRW','monthly',24,'2026-07-24',?,'2026-07-01')`, paymentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skippedID, _ := result.LastInsertId()
+	if _, err = a.db.Exec(`INSERT INTO subscription_price_history(subscription_id,amount,currency,effective_from) VALUES(?,4900,'KRW','2026-07-01'); INSERT INTO subscription_occurrences(subscription_id,period,scheduled_date,amount,currency,skipped) VALUES(?,'2026-08','2026-08-24',4900,'KRW',1)`, skippedID, skippedID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err = a.db.Exec(`INSERT INTO subscriptions(service_name,amount,currency,billing_cycle,billing_day,billing_anchor,payment_method_id,started_at) VALUES('다른 달 연간',12000,'KRW','yearly',10,'2026-09-10',?,'2026-01-01'); INSERT INTO subscriptions(service_name,amount,currency,billing_cycle,billing_day,billing_anchor,payment_method_id,started_at,status,cancelled_at) VALUES('해지 완료',5000,'KRW','monthly',5,'2026-01-05',?,'2026-01-01','cancelled','2026-07-31')`, paymentID, paymentID); err != nil {
+		t.Fatal(err)
+	}
+
+	month, err := a.loadPaymentOccurrences("2026-08")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(month.Items) != 3 {
+		t.Fatalf("unexpected August occurrences: %+v", month.Items)
+	}
+	if month.Items[0].ServiceName != "Discord Nitro" || month.Items[0].Amount != 900 || month.Items[0].Currency != "USD" || month.Items[0].PaymentMethodName != paymentName {
+		t.Fatalf("historical price or payment method was not preserved: %+v", month.Items[0])
+	}
+	if month.Items[1].ServiceName != "건너뜀" || !month.Items[1].Skipped {
+		t.Fatalf("skipped occurrence is missing from calendar details: %+v", month.Items)
+	}
+	if month.Items[2].ServiceName != "첫 결제" || !month.Items[2].FirstPayment || month.Items[2].ScheduledDate != "2026-08-31" {
+		t.Fatalf("trial first payment was not anchored correctly: %+v", month.Items[2])
+	}
+	if month.Totals["USD"] != 900 || month.Totals["KRW"] != 17000 {
+		t.Fatalf("skipped or mixed-currency totals are wrong: %+v", month.Totals)
+	}
+}
+
+func TestUpcomingMonthRejectsInvalidPeriod(t *testing.T) {
+	a := newTestApplication(t)
+	recorder := httptest.NewRecorder()
+	a.getUpcomingMonth(recorder, httptest.NewRequest(http.MethodGet, "/api/upcoming?month=2026-13", nil))
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"error"`) {
+		t.Fatalf("invalid period status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestJSONExportImportRoundTrip(t *testing.T) {
 	a := newTestApplication(t)
 	if _, err := a.db.Exec(`INSERT INTO currencies(code,name,is_builtin) VALUES('GBP','GBP',0)`); err != nil {
@@ -662,16 +731,57 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 	if strings.Contains(html, `>×</button>`) || strings.Contains(html, `<span>+</span>`) {
 		t.Fatal("header and modal action icons must use SVG")
 	}
-	if !strings.Contains(html, `href="/assets/app.css"`) || !strings.Contains(html, `src="/assets/app.js"`) || strings.Contains(html, `?v=`) {
-		t.Fatal("dashboard assets must use stable URLs without version query tags")
+	if !strings.Contains(html, `href="/assets/app.css?v=20260821-calendar"`) || !strings.Contains(html, `src="/assets/app.js?v=20260821-calendar"`) {
+		t.Fatal("dashboard assets must use the current cache version")
 	}
 	authSource, err := webFS.ReadFile("web/auth.html")
 	if err != nil {
 		t.Fatal(err)
 	}
 	auth := string(authSource)
-	if !strings.Contains(auth, `href="/assets/app.css"`) || strings.Contains(auth, `?v=`) {
-		t.Fatal("authentication assets must use stable URLs without version query tags")
+	if !strings.Contains(auth, `href="/assets/app.css?v=20260821-calendar"`) {
+		t.Fatal("authentication stylesheet must use the current cache version")
+	}
+}
+
+func TestUpcomingCalendarSourceIncludesAccessibleMonthlyView(t *testing.T) {
+	jsSource, err := webFS.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(jsSource)
+	for _, want := range []string{
+		`let upcomingView = "list"`,
+		`data-upcoming-view="calendar"`,
+		`/api/upcoming?month=`,
+		`data-calendar-move="-1"`,
+		`data-calendar-today`,
+		`data-calendar-date=`,
+		`결제 예정 ${items.length}건`,
+		"openModal(`${monthNumber}월 ${day}일 결제 예정`",
+		`item.skipped ? "skipped"`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("upcoming calendar is missing %q", want)
+		}
+	}
+
+	cssSource, err := webFS.ReadFile("web/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := compactSource(string(cssSource))
+	for _, rule := range []string{
+		`.calendar-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))`,
+		`.calendar-day{position:relative;display:flex;min-width:0;min-height:86px`,
+		`.calendar-day.has-payments{cursor:pointer`,
+		`.calendar-day.today .calendar-date{background:`,
+		`@media(max-width:620px)`,
+		`.calendar-day{min-height:58px`,
+	} {
+		if !strings.Contains(css, compactSource(rule)) {
+			t.Fatalf("upcoming calendar styles are missing %q", rule)
+		}
 	}
 }
 

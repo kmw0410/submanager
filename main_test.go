@@ -695,7 +695,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	css := compactSource(string(cssSource))
-	for _, rule := range []string{".main:focus{outline:none", ".upcoming-row .sub-content{flex:1;text-align:left", "#addSubscriptionButton{height:39px", ".skip-status{display:inline-flex", ".sub-card.skipped{opacity:1;border:2px solid", ".button.skip-action{color:"} {
+	for _, rule := range []string{".main:focus{outline:none", ".upcoming-row .sub-content{min-width:0;grid-column:1/-1", "#addSubscriptionButton{height:39px", ".skip-status{display:inline-flex", ".sub-card.skipped{opacity:1;border:2px solid", ".button.skip-action{color:"} {
 		if !strings.Contains(css, compactSource(rule)) {
 			t.Fatalf("missing presentation rule %q", rule)
 		}
@@ -731,7 +731,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 	if strings.Contains(html, `>×</button>`) || strings.Contains(html, `<span>+</span>`) {
 		t.Fatal("header and modal action icons must use SVG")
 	}
-	if !strings.Contains(html, `href="/assets/app.css?v=20260821-calendar"`) || !strings.Contains(html, `src="/assets/app.js?v=20260821-calendar"`) {
+	if !strings.Contains(html, `href="/assets/app.css?v=20260821-upcoming-grid"`) || !strings.Contains(html, `src="/assets/app.js?v=20260821-upcoming-grid"`) {
 		t.Fatal("dashboard assets must use the current cache version")
 	}
 	authSource, err := webFS.ReadFile("web/auth.html")
@@ -739,7 +739,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := string(authSource)
-	if !strings.Contains(auth, `href="/assets/app.css?v=20260821-calendar"`) {
+	if !strings.Contains(auth, `href="/assets/app.css?v=20260821-upcoming-grid"`) {
 		t.Fatal("authentication stylesheet must use the current cache version")
 	}
 }
@@ -794,7 +794,10 @@ func TestDashboardResponsiveLayout(t *testing.T) {
 	for _, rule := range []string{
 		"grid-template-columns:minmax(0,1.45fr)",
 		".currency-tabs{max-width:100%;overflow-x:auto",
-		".upcoming-row{display:grid;grid-template-columns:minmax(0,1fr) auto",
+		".date-group{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))",
+		".upcoming-row{display:grid;width:100%;height:128px",
+		".date-group{grid-template-columns:repeat(2,minmax(0,1fr))",
+		".date-group{grid-template-columns:minmax(0,1fr)",
 		"max-height:93dvh",
 		"@media(max-width:420px)",
 		".form-actions,.edit-actions,.data-actions{display:grid;grid-template-columns:1fr",

@@ -60,7 +60,7 @@ Typical runtime data path:
 ## 4. Critical Rules
 - Keep SQLite as the sole persistence layer unless a storage redesign is explicitly requested.
 - Preserve the single-administrator setup flow; do not add open registration.
-- Require the 16-to-128-character `SETUP_TOKEN` only until the first administrator is created; never store it in SQLite.
+- When no administrator exists, generate a new 48-character setup token on every process start, store it only in a mode-0600 file beside the database, and remove the file after setup; never store the token in SQLite or log its value.
 - Never store administrator passwords or session tokens in plaintext.
 - Keep the browser UI dependency-free. Do not add React, Vue, a Node build, or a package manager unless explicitly requested.
 - Keep web assets in `web/` and embedded in the server binary. Update the `go:embed` pattern if new embedded asset locations are introduced.
@@ -203,7 +203,6 @@ Environment variables:
 | `PORT` | `8080` | HTTP listen port |
 | `DB_PATH` | `./data/submanager.db` locally, `/data/submanager.db` in the image | SQLite path |
 | `TZ` | `Asia/Seoul` | Billing and notification timezone |
-| `SETUP_TOKEN` | none | Required 16-to-128-character secret before the first administrator setup |
 
 Runtime rules:
 - Create the parent directory of `DB_PATH` before opening SQLite.

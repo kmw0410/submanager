@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -131,6 +132,55 @@ func TestFirstAccountRequiresSetupToken(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatal("administrator was created with an invalid setup token")
+	}
+}
+
+func TestSetupTokenFileIsRegeneratedSecurely(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".submanager-setup-token")
+	first, err := createSetupTokenFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := createSetupTokenFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 48 || len(second) != 48 || first == second {
+		t.Fatalf("setup tokens were not independently generated: first=%d second=%d equal=%t", len(first), len(second), first == second)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(contents)) != second {
+		t.Fatal("setup token file does not contain the latest token")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("setup token permissions=%o", info.Mode().Perm())
+	}
+}
+
+func TestSetupTokenFileIsRemovedAfterAdministratorCreation(t *testing.T) {
+	a := newTestApplication(t)
+	a.setupTokenPath = filepath.Join(t.TempDir(), ".submanager-setup-token")
+	token, err := createSetupTokenFile(a.setupTokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.setupToken = token
+	request, recorder := jsonRequest(t, http.MethodPost, "/auth/setup", map[string]string{
+		"name": "관리자", "email": "admin@example.com", "password": "safe-password", "setupToken": token,
+	})
+	a.setupAccount(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("setup status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := os.Stat(a.setupTokenPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("setup token file still exists: %v", err)
 	}
 }
 
@@ -816,6 +866,11 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 	auth := string(authSource)
 	if !strings.Contains(auth, `href="/assets/app.css?v=20260821-upcoming-grid"`) {
 		t.Fatal("authentication stylesheet must use the current cache version")
+	}
+	for _, want := range []string{`name="setupToken"`, `minlength="48" maxlength="48"`, `cat /data/.submanager-setup-token`} {
+		if !strings.Contains(auth, want) {
+			t.Fatalf("setup token instructions are missing %q", want)
+		}
 	}
 }
 

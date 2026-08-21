@@ -40,6 +40,7 @@ type application struct {
 	authTpl                *template.Template
 	location               *time.Location
 	setupToken             string
+	setupTokenPath         string
 	authLimiter            *attemptLimiter
 	notificationHTTPClient *http.Client
 }
@@ -228,7 +229,6 @@ func main() {
 	app := &application{
 		db:          db,
 		location:    loc,
-		setupToken:  env("SETUP_TOKEN", ""),
 		authLimiter: newAttemptLimiter(),
 	}
 	app.tpl = template.Must(template.New("index.html").ParseFS(webFS, "web/index.html"))
@@ -240,8 +240,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if !accountExists && (len(app.setupToken) < 16 || len(app.setupToken) > 128) {
-		log.Fatal("SETUP_TOKEN must contain 16 to 128 characters before the first administrator setup")
+	app.setupTokenPath = filepath.Join(filepath.Dir(dbPath), ".submanager-setup-token")
+	if !accountExists {
+		app.setupToken, err = createSetupTokenFile(app.setupTokenPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("Initial setup token created at %s", app.setupTokenPath)
+	} else if err := os.Remove(app.setupTokenPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Printf("remove stale setup token file: %v", err)
 	}
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
@@ -730,6 +737,11 @@ func (a *application) setupAccount(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, err)
 		return
 	}
+	if a.setupTokenPath != "" {
+		if err := os.Remove(a.setupTokenPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("remove setup token file: %v", err)
+		}
+	}
 	a.authLimiter.reset(keys...)
 	writeJSON(w, http.StatusCreated, map[string]bool{"ok": true})
 }
@@ -826,6 +838,21 @@ func newSessionCredentials() (string, string, time.Time, error) {
 	sum := sha256.Sum256([]byte(token))
 	expires := time.Now().UTC().Add(30 * 24 * time.Hour)
 	return token, hex.EncodeToString(sum[:]), expires, nil
+}
+
+func createSetupTokenFile(path string) (string, error) {
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	token := hex.EncodeToString(raw)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
 func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expires time.Time) {

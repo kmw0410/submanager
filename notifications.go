@@ -22,7 +22,7 @@ type upcomingNotification struct {
 func (n upcomingNotification) plainText() string {
 	var b strings.Builder
 	b.WriteString("🔔 결제 예정\n\n")
-	fmt.Fprintf(&b, "%d일 뒤에 %d개의 항목이 결제 예정이에요:\n\n", n.Days, len(n.Items))
+	fmt.Fprintf(&b, "%d일 뒤에 %d개의 항목이 결제 예정이에요:\n", n.Days, len(n.Items))
 	for _, item := range n.Items {
 		b.WriteString("- ")
 		b.WriteString(item)
@@ -34,7 +34,7 @@ func (n upcomingNotification) plainText() string {
 func (n upcomingNotification) telegramMarkdown() string {
 	var b strings.Builder
 	b.WriteString("*🔔 결제 예정*\n\n")
-	fmt.Fprintf(&b, "%d일 뒤에 %d개의 항목이 결제 예정이에요:\n\n", n.Days, len(n.Items))
+	fmt.Fprintf(&b, "%d일 뒤에 %d개의 항목이 결제 예정이에요:\n", n.Days, len(n.Items))
 	for _, item := range n.Items {
 		b.WriteString("\\- ")
 		b.WriteString(escapeTelegramMarkdownV2(item))
@@ -105,8 +105,8 @@ func (a *application) testNotification(w http.ResponseWriter, r *http.Request) {
 	notification := upcomingNotification{
 		Days: days,
 		Items: []string{
-			"테스트 결제항목 1",
-			"테스트 결제항목 2",
+			upcomingNotificationItem("테스트 결제항목 1", 1000, "KRW"),
+			upcomingNotificationItem("테스트 결제항목 2", 990, "USD"),
 		},
 	}
 	client := &http.Client{Timeout: 8 * time.Second}
@@ -197,7 +197,7 @@ func (a *application) runScheduledNotifications() {
 		if remaining != days {
 			continue
 		}
-		items = append(items, s.ServiceName)
+		items = append(items, upcomingNotificationItem(s.ServiceName, s.Amount, s.Currency))
 		dueDate = due
 	}
 	if len(items) == 0 {
@@ -208,6 +208,10 @@ func (a *application) runScheduledNotifications() {
 	notification := upcomingNotification{Days: days, Items: items}
 	key := "upcoming:" + dueDate + ":" + strconv.Itoa(days)
 	a.deliverOnce(key, notification)
+}
+
+func upcomingNotificationItem(serviceName string, amount int64, currency string) string {
+	return serviceName + " (" + money(amount, currency) + ")"
 }
 
 // Change and monthly-summary notifications are intentionally disabled.

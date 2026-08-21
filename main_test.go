@@ -821,16 +821,31 @@ func TestModalFocusManagement(t *testing.T) {
 	}
 }
 
-func TestNotificationTestMessageIncludesExamplePayment(t *testing.T) {
-	message := notificationTestMessage(time.Date(2026, time.August, 11, 0, 0, 0, 0, time.FixedZone("Asia/Seoul", 9*60*60)))
-	for _, want := range []string{"SubManager 알림 테스트", "정기결제 알림 테스트", "1,000원", "2026.08.11 결제 예정이에요."} {
-		if !strings.Contains(message, want) {
-			t.Fatalf("test notification is missing %q: %s", want, message)
+func TestUpcomingNotificationItemsIncludePrices(t *testing.T) {
+	items := []string{
+		upcomingNotificationItem("Discord Nitro", 1000, "USD"),
+		upcomingNotificationItem("네이버플러스 멤버십", 4900, "KRW"),
+	}
+	if items[0] != "Discord Nitro ($10.00)" {
+		t.Fatalf("unexpected USD notification item: %q", items[0])
+	}
+	if items[1] != "네이버플러스 멤버십 (₩4,900)" {
+		t.Fatalf("unexpected KRW notification item: %q", items[1])
+	}
+
+	notification := upcomingNotification{Days: 3, Items: items}
+	for _, want := range items {
+		if !strings.Contains(notification.plainText(), "- "+want) {
+			t.Fatalf("plain notification is missing %q: %s", want, notification.plainText())
 		}
 	}
-	payload := discordWebhookPayload(message)
+	if !strings.Contains(notification.telegramMarkdown(), `Discord Nitro \($10\.00\)`) {
+		t.Fatalf("Telegram notification did not escape the priced item: %s", notification.telegramMarkdown())
+	}
+
+	payload := discordWebhookPayload(notification.plainText())
 	embeds, ok := payload["embeds"].([]map[string]any)
-	if !ok || len(embeds) != 1 || embeds[0]["title"] != "SubManager 알림 테스트" {
-		t.Fatalf("discord test notification must be an embed: %#v", payload)
+	if !ok || len(embeds) != 1 || embeds[0]["title"] != "🔔 결제 예정" {
+		t.Fatalf("Discord upcoming notification must be an embed: %#v", payload)
 	}
 }

@@ -483,10 +483,58 @@
   }
 
   function upcomingViewSwitcher() {
-    return `<div class="view-switcher" aria-label="결제 예정 보기 방식">
-      <button type="button" data-upcoming-view="list" aria-pressed="${upcomingView === "list"}" class="${upcomingView === "list" ? "active" : ""}">목록</button>
-      <button type="button" data-upcoming-view="calendar" aria-pressed="${upcomingView === "calendar"}" class="${upcomingView === "calendar" ? "active" : ""}">캘린더</button>
+    return `<div class="upcoming-controls">
+      <button class="button ghost small" type="button" data-export-ics>ICS 내보내기</button>
+      <div class="view-switcher" aria-label="결제 예정 보기 방식">
+        <button type="button" data-upcoming-view="list" aria-pressed="${upcomingView === "list"}" class="${upcomingView === "list" ? "active" : ""}">목록</button>
+        <button type="button" data-upcoming-view="calendar" aria-pressed="${upcomingView === "calendar"}" class="${upcomingView === "calendar" ? "active" : ""}">캘린더</button>
+      </div>
     </div>`;
+  }
+
+  function openICSExport() {
+    openModal("ICS 내보내기", "결제 예정");
+    modalBody.innerHTML = `<form id="icsExportForm">
+      <p class="modal-description">결제 예정 일정을 캘린더 파일로 내보낼 수 있어요.</p>
+      <fieldset class="export-periods">
+        <legend>내보낼 기간</legend>
+        <label><input type="radio" name="months" value="1"><span>이번 달</span></label>
+        <label><input type="radio" name="months" value="3"><span>앞으로 3개월</span></label>
+        <label><input type="radio" name="months" value="12" checked><span>앞으로 1년</span></label>
+      </fieldset>
+      <div class="form-error" aria-live="polite"></div>
+      <div class="form-actions"><button class="button ghost" type="button" data-close-modal>취소</button><button class="button primary" type="submit">ICS 내보내기</button></div>
+    </form>`;
+  }
+
+  async function downloadICS(form) {
+    const submit = form.querySelector('[type="submit"]');
+    const error = form.querySelector(".form-error");
+    submit.disabled = true;
+    error.textContent = "";
+    try {
+      const months = new FormData(form).get("months");
+      const response = await fetch(`/api/upcoming/export?format=ics&months=${encodeURIComponent(months)}`);
+      if (response.status === 401) {
+        location.replace("/");
+        return;
+      }
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || "ICS 파일을 만들지 못했어요.");
+      }
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(await response.blob());
+      link.download = "submanager-payments.ics";
+      link.click();
+      URL.revokeObjectURL(link.href);
+      closeModal();
+      toast("ICS 파일을 내보냈어요.");
+    } catch (err) {
+      error.textContent = err.message;
+    } finally {
+      submit.disabled = false;
+    }
   }
 
   const calendarPeriod = () =>
@@ -1665,6 +1713,10 @@
   }
 
   document.addEventListener("click", (e) => {
+    if (e.target.closest("[data-export-ics]")) {
+      openICSExport();
+      return;
+    }
     const upcomingSwitch = e.target.closest("[data-upcoming-view]");
     if (upcomingSwitch) {
       upcomingView = upcomingSwitch.dataset.upcomingView;
@@ -1733,6 +1785,12 @@
     if (e.target.matches("#subscriptionSearch")) {
       subscriptionQuery = e.target.value;
       renderSubscriptionResults();
+    }
+  });
+  document.addEventListener("submit", (e) => {
+    if (e.target.matches("#icsExportForm")) {
+      e.preventDefault();
+      downloadICS(e.target);
     }
   });
   document.addEventListener("keydown", (e) => {

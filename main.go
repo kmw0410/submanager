@@ -263,6 +263,7 @@ func main() {
 	mux.HandleFunc("POST /auth/logout", app.requireAuth(app.logout))
 	mux.HandleFunc("GET /api/state", app.requireAuth(app.getState))
 	mux.HandleFunc("GET /api/upcoming", app.requireAuth(app.getUpcomingMonth))
+	mux.HandleFunc("GET /api/upcoming/export", app.requireAuth(app.exportUpcoming))
 	mux.HandleFunc("POST /api/subscriptions", app.requireAuth(app.createSubscription))
 	mux.HandleFunc("PUT /api/subscriptions/{id}", app.requireAuth(app.updateSubscription))
 	mux.HandleFunc("POST /api/subscriptions/{id}/skip", app.requireAuth(app.skipSubscription))
@@ -1457,6 +1458,104 @@ func (a *application) getUpcomingMonth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, month)
+}
+
+func (a *application) exportUpcoming(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("format") != "ics" {
+		bad(w, "지원하는 내보내기 형식은 ICS예요")
+		return
+	}
+	months, err := strconv.Atoi(r.URL.Query().Get("months"))
+	if err != nil || (months != 1 && months != 3 && months != 12) {
+		bad(w, "내보낼 기간은 이번 달, 3개월 또는 1년 중에서 선택해 주세요")
+		return
+	}
+	now := time.Now().In(a.location)
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, a.location)
+	end := time.Date(now.Year(), now.Month()+time.Month(months), 0, 0, 0, 0, 0, a.location)
+	calendar, err := a.upcomingICS(start, end)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="submanager-payments.ics"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(calendar))
+}
+
+func (a *application) upcomingICS(start, end time.Time) (string, error) {
+	items := make([]paymentOccurrence, 0)
+	dtstamp := time.Now().UTC().Format("20060102T150405Z")
+	for month := time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, a.location); !month.After(end); month = month.AddDate(0, 1, 0) {
+		occurrences, err := a.loadPaymentOccurrences(month.Format("2006-01"))
+		if err != nil {
+			return "", err
+		}
+		for _, item := range occurrences.Items {
+			date, err := time.ParseInLocation("2006-01-02", item.ScheduledDate, a.location)
+			if err == nil && !item.Skipped && !date.Before(start) && !date.After(end) {
+				items = append(items, item)
+			}
+		}
+	}
+
+	var calendar strings.Builder
+	for _, line := range []string{"BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//SubManager//Payment Calendar//KO", "CALSCALE:GREGORIAN"} {
+		writeICSLine(&calendar, line)
+	}
+	for _, item := range items {
+		date, _ := time.ParseInLocation("2006-01-02", item.ScheduledDate, a.location)
+		description := strings.Join([]string{
+			"서비스: " + item.ServiceName,
+			"금액: " + item.Currency + " " + formatMinorUnits(item.Amount, item.Currency),
+			"결제수단: " + item.PaymentMethodName,
+			"결제주기: " + map[bool]string{true: "연간", false: "월간"}[item.BillingCycle == "yearly"],
+		}, "\n")
+		for _, line := range []string{
+			"BEGIN:VEVENT",
+			fmt.Sprintf("UID:%d-%s@submanager", item.SubscriptionID, date.Format("20060102")),
+			"DTSTAMP:" + dtstamp,
+			"DTSTART;VALUE=DATE:" + date.Format("20060102"),
+			"DTEND;VALUE=DATE:" + date.AddDate(0, 0, 1).Format("20060102"),
+			"SUMMARY:" + escapeICSText(item.ServiceName+" 결제"),
+			"DESCRIPTION:" + escapeICSText(description),
+			"END:VEVENT",
+		} {
+			writeICSLine(&calendar, line)
+		}
+	}
+	writeICSLine(&calendar, "END:VCALENDAR")
+	return calendar.String(), nil
+}
+
+func escapeICSText(value string) string {
+	value = strings.ReplaceAll(value, "\\", "\\\\")
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	value = strings.ReplaceAll(value, "\r", "\n")
+	value = strings.ReplaceAll(value, "\n", "\\n")
+	value = strings.ReplaceAll(value, ";", "\\;")
+	return strings.ReplaceAll(value, ",", "\\,")
+}
+
+func writeICSLine(calendar *strings.Builder, line string) {
+	const limit = 75
+	first := true
+	for len(line) > 0 {
+		available := limit
+		if !first {
+			calendar.WriteByte(' ')
+			available--
+		}
+		cut := min(len(line), available)
+		for cut > 0 && cut < len(line) && line[cut]&0xc0 == 0x80 {
+			cut--
+		}
+		calendar.WriteString(line[:cut])
+		calendar.WriteString("\r\n")
+		line = line[cut:]
+		first = false
+	}
 }
 
 type subInput struct {

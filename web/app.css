@@ -535,6 +535,11 @@ button.summary-card {
   justify-content: space-between;
   gap: 22px;
 }
+.upcoming-controls {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
 .view-switcher {
   display: flex;
   flex: 0 0 auto;
@@ -879,6 +884,41 @@ textarea {
 }
 .field {
   display: block;
+}
+.modal-description {
+  margin: 0 0 21px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.export-periods {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+.export-periods legend {
+  margin-bottom: 9px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.export-periods label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 12px 13px;
+  background: var(--card);
+  cursor: pointer;
+}
+.export-periods label:hover {
+  border-color: var(--accent);
+  background: var(--raised);
+}
+.export-periods input {
+  width: auto;
+  accent-color: var(--accent);
 }
 .field > span {
   display: block;
@@ -1668,6 +1708,10 @@ textarea {
     align-items: stretch;
     flex-direction: column;
     gap: 18px;
+  }
+  .upcoming-controls {
+    align-items: stretch;
+    flex-direction: column-reverse;
   }
   .view-switcher {
     width: 100%;

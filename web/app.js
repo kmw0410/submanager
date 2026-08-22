@@ -484,7 +484,7 @@
 
   function upcomingViewSwitcher() {
     return `<div class="upcoming-controls">
-      <button class="button ghost small" type="button" data-export-ics>ICS 내보내기</button>
+      <button class="button ghost small" type="button" data-export-ics>결제 일정 내보내기</button>
       <div class="view-switcher" aria-label="결제 예정 보기 방식">
         <button type="button" data-upcoming-view="list" aria-pressed="${upcomingView === "list"}" class="${upcomingView === "list" ? "active" : ""}">목록</button>
         <button type="button" data-upcoming-view="calendar" aria-pressed="${upcomingView === "calendar"}" class="${upcomingView === "calendar" ? "active" : ""}">캘린더</button>
@@ -495,7 +495,7 @@
   function openICSExport() {
     openModal("ICS 내보내기", "결제 예정");
     modalBody.innerHTML = `<form id="icsExportForm">
-      <p class="modal-description">결제 예정 일정을 캘린더 파일로 내보낼 수 있어요.</p>
+      <p class="modal-description">ICS 형식 · 미래 결제 예정만 포함</p>
       <fieldset class="export-periods">
         <legend>내보낼 기간</legend>
         <label><input type="radio" name="months" value="1"><span>이번 달</span></label>

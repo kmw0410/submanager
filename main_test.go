@@ -971,7 +971,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 	if strings.Contains(html, `>×</button>`) || strings.Contains(html, `<span>+</span>`) {
 		t.Fatal("header and modal action icons must use SVG")
 	}
-	if !strings.Contains(html, `href="/assets/app.css?v=20260823-ics-export"`) || !strings.Contains(html, `src="/assets/app.js?v=20260823-ics-export"`) {
+	if !strings.Contains(html, `href="/assets/app.css?v=20260823-payment-schedule-export"`) || !strings.Contains(html, `src="/assets/app.js?v=20260823-payment-schedule-export"`) {
 		t.Fatal("dashboard assets must use the current cache version")
 	}
 	authSource, err := webFS.ReadFile("web/auth.html")
@@ -979,7 +979,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := string(authSource)
-	if !strings.Contains(auth, `href="/assets/app.css?v=20260823-ics-export"`) {
+	if !strings.Contains(auth, `href="/assets/app.css?v=20260823-payment-schedule-export"`) {
 		t.Fatal("authentication stylesheet must use the current cache version")
 	}
 	for _, want := range []string{`name="setupToken"`, `minlength="48" maxlength="48"`, `cat /data/.submanager-setup-token`} {
@@ -1038,7 +1038,9 @@ func TestUpcomingICSExportSourceUsesExistingModal(t *testing.T) {
 	js := string(jsSource)
 	for _, want := range []string{
 		`data-export-ics`,
+		`>결제 일정 내보내기</button>`,
 		`openModal("ICS 내보내기", "결제 예정")`,
+		`ICS 형식 · 미래 결제 예정만 포함`,
 		`name="months" value="12" checked`,
 		`/api/upcoming/export?format=ics&months=`,
 		`link.download = "submanager-payments.ics"`,

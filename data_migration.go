@@ -59,7 +59,7 @@ func dataMigrationComplete(path string) (bool, error) {
 	return value == "1", nil
 }
 
-func copyDatabaseForMigration(source, destination string) (err error) {
+func copyDatabaseForMigration(source, destination string) error {
 	snapshotDirectory, err := os.MkdirTemp(filepath.Dir(destination), ".submanager-migration-source-*")
 	if err != nil {
 		return fmt.Errorf("create migration source snapshot: %w", err)
@@ -73,23 +73,12 @@ func copyDatabaseForMigration(source, destination string) (err error) {
 		return fmt.Errorf("copy migration source WAL snapshot: %w", err)
 	}
 
-	staging, err := os.CreateTemp(filepath.Dir(destination), ".submanager-migration-*.db")
+	stagingDirectory, err := os.MkdirTemp(filepath.Dir(destination), ".submanager-migration-*")
 	if err != nil {
-		return fmt.Errorf("create migration staging database: %w", err)
+		return fmt.Errorf("create migration staging directory: %w", err)
 	}
-	stagingPath := staging.Name()
-	if err := staging.Close(); err != nil {
-		_ = os.Remove(stagingPath)
-		return fmt.Errorf("close migration staging database: %w", err)
-	}
-	if err := os.Remove(stagingPath); err != nil {
-		return fmt.Errorf("prepare migration staging database: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = os.Remove(stagingPath)
-		}
-	}()
+	defer os.RemoveAll(stagingDirectory)
+	stagingPath := filepath.Join(stagingDirectory, "submanager.db")
 
 	sourceDB, err := sql.Open("sqlite3", sqliteReadOnlyDSN(snapshotPath))
 	if err != nil {

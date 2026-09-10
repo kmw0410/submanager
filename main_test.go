@@ -1075,7 +1075,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 	if strings.Contains(html, `>×</button>`) || strings.Contains(html, `<span>+</span>`) {
 		t.Fatal("header and modal action icons must use SVG")
 	}
-	if !strings.Contains(html, `href="/assets/app.css?v=20260910-subscription-footer"`) || !strings.Contains(html, `src="/assets/app.js?v=20260910-subscription-footer"`) {
+	if !strings.Contains(html, `href="/assets/app.css?v=20260910-subscription-footer"`) || !strings.Contains(html, `src="/assets/app.js?v=20260911-dashboard-cache"`) {
 		t.Fatal("dashboard assets must use the current cache version")
 	}
 	authSource, err := webFS.ReadFile("web/auth.html")

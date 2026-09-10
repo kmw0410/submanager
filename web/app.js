@@ -10,6 +10,10 @@
   let calendarYear = currentMonth.getFullYear();
   let calendarMonth = currentMonth.getMonth();
   const upcomingMonths = new Map();
+  const currencyDigitsByCode = new Map(
+    (state.currencies || []).map((currency) => [currency.code, currency.digits]),
+  );
+  const currencyFormatters = new Map();
   let upcomingRequest = 0;
   const main = document.querySelector("#main");
   const backdrop = document.querySelector("#modalBackdrop");
@@ -69,8 +73,7 @@
       (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[c]),
     );
   const serviceColor = (value) => /^#[0-9a-f]{6}$/i.test(value || "") ? value : "#9AB8A8";
-  const currencyDigits = (currency) =>
-    state.currencies?.find((c) => c.code === currency)?.digits ?? 2;
+  const currencyDigits = (currency) => currencyDigitsByCode.get(String(currency).toUpperCase()) ?? 2;
   const amountValue = (value, currency) =>
     (Number(value || 0) / (10 ** currencyDigits(currency))).toFixed(currencyDigits(currency));
   const amountMinorUnits = (value, currency) => {
@@ -82,22 +85,32 @@
     return Number.isSafeInteger(minor) ? minor : null;
   };
   const money = (value, currency = "KRW") => {
-    const amount = Number(value || 0) / (10 ** currencyDigits(currency));
-    try {
-      return new Intl.NumberFormat("en-US", {
-        style: "currency",
-        currency,
-        minimumFractionDigits: currencyDigits(currency),
-        maximumFractionDigits: currencyDigits(currency),
-      }).format(amount);
-    } catch {
+    const code = String(currency).toUpperCase();
+    const digits = currencyDigits(code);
+    const amount = Number(value || 0) / (10 ** digits);
+    let formatter = currencyFormatters.get(code);
+    if (formatter === undefined) {
+      try {
+        formatter = new Intl.NumberFormat("en-US", {
+          style: "currency",
+          currency: code,
+          minimumFractionDigits: digits,
+          maximumFractionDigits: digits,
+        });
+      } catch {
+        formatter = null;
+      }
+      currencyFormatters.set(code, formatter);
+    }
+    if (!formatter) {
       return `${currency} ${
         amount.toLocaleString("en-US", {
-          minimumFractionDigits: currencyDigits(currency),
-          maximumFractionDigits: currencyDigits(currency),
+          minimumFractionDigits: digits,
+          maximumFractionDigits: digits,
         })
       }`;
     }
+    return formatter.format(amount);
   };
   const cycle = (value) => value === "yearly" ? "매년" : "매월";
   const activeSubs = () => (state.subscriptions || []).filter((s) => s.Status === "active");

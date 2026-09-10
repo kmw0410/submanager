@@ -110,6 +110,11 @@ type upcomingMonth struct {
 	Totals map[string]int64    `json:"totals"`
 }
 
+type subscriptionPricePoint struct {
+	Amount                  int64
+	Currency, EffectiveFrom string
+}
+
 func (a *application) getState(w http.ResponseWriter, _ *http.Request) {
 	s, e := a.loadState()
 	if e != nil {
@@ -226,6 +231,14 @@ func (a *application) loadState() (appState, error) {
 	now := time.Now().In(a.location)
 	currencyStats := map[string]*currencyStat{}
 	currencyOrder := []string{}
+	addCurrency := func(currency string) {
+		currency = strings.ToUpper(currency)
+		if _, ok := currencyStats[currency]; !ok {
+			currencyStats[currency] = &currencyStat{Currency: currency, MonthlyTotals: []int64{}}
+			currencyOrder = append(currencyOrder, currency)
+		}
+	}
+	activeSubscriptionIDs := make(map[int64]struct{})
 	for i := range s.Subscriptions {
 		v := &s.Subscriptions[i]
 		if v.TrialEndsAt != "" {
@@ -236,11 +249,9 @@ func (a *application) loadState() (appState, error) {
 		v.NextPayment = nextPayment(now, v.BillingDay, v.BillingCycle, v.BillingDate)
 		if v.Status == "active" {
 			s.Stats.ActiveCount++
+			activeSubscriptionIDs[v.ID] = struct{}{}
 			currency := strings.ToUpper(v.Currency)
-			if _, ok := currencyStats[currency]; !ok {
-				currencyStats[currency] = &currencyStat{Currency: currency, MonthlyTotals: []int64{}}
-				currencyOrder = append(currencyOrder, currency)
-			}
+			addCurrency(currency)
 			due, _ := time.ParseInLocation("2006-01-02", v.NextPayment, a.location)
 			if due.Sub(now) <= 7*24*time.Hour {
 				s.Stats.UpcomingCount++
@@ -252,23 +263,17 @@ func (a *application) loadState() (appState, error) {
 			}
 		}
 	}
-	historyCurrencies, err := a.db.Query(`SELECT DISTINCT UPPER(h.currency) FROM subscription_price_history h JOIN subscriptions s ON s.id=h.subscription_id WHERE s.status='active' ORDER BY 1`)
+	priceHistory, err := a.loadSubscriptionPriceHistory()
 	if err != nil {
 		return s, err
 	}
-	for historyCurrencies.Next() {
-		var currency string
-		if err := historyCurrencies.Scan(&currency); err != nil {
-			historyCurrencies.Close()
-			return s, err
+	for subscriptionID, points := range priceHistory {
+		if _, active := activeSubscriptionIDs[subscriptionID]; !active {
+			continue
 		}
-		if _, ok := currencyStats[currency]; !ok {
-			currencyStats[currency] = &currencyStat{Currency: currency, MonthlyTotals: []int64{}}
-			currencyOrder = append(currencyOrder, currency)
+		for _, point := range points {
+			addCurrency(point.Currency)
 		}
-	}
-	if err := historyCurrencies.Close(); err != nil {
-		return s, err
 	}
 	sort.SliceStable(currencyOrder, func(i, j int) bool {
 		if currencyOrder[i] == currencyOrder[j] {
@@ -286,10 +291,11 @@ func (a *application) loadState() (appState, error) {
 		d := now.AddDate(0, i, 0)
 		p := d.Format("2006-01")
 		s.Stats.Months = append(s.Stats.Months, d.Format("1월"))
-		totals, err := a.monthTotals(p)
+		month, err := a.loadPaymentOccurrencesWithPriceHistory(p, priceHistory)
 		if err != nil {
 			return s, err
 		}
+		totals := month.Totals
 		for _, currency := range currencyOrder {
 			stat := currencyStats[currency]
 			value := totals[currency]
@@ -423,29 +429,37 @@ func (a *application) monthTotals(period string) (map[string]int64, error) {
 }
 
 func (a *application) loadPaymentOccurrences(period string) (upcomingMonth, error) {
+	history, err := a.loadSubscriptionPriceHistory()
+	if err != nil {
+		return upcomingMonth{}, err
+	}
+	return a.loadPaymentOccurrencesWithPriceHistory(period, history)
+}
+
+func (a *application) loadSubscriptionPriceHistory() (map[int64][]subscriptionPricePoint, error) {
+	history := map[int64][]subscriptionPricePoint{}
+	rows, err := a.db.Query(`SELECT subscription_id,amount,currency,effective_from FROM subscription_price_history ORDER BY subscription_id,effective_from,id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var subscriptionID int64
+		var point subscriptionPricePoint
+		if err := rows.Scan(&subscriptionID, &point.Amount, &point.Currency, &point.EffectiveFrom); err != nil {
+			return nil, err
+		}
+		history[subscriptionID] = append(history[subscriptionID], point)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return history, nil
+}
+
+func (a *application) loadPaymentOccurrencesWithPriceHistory(period string, history map[int64][]subscriptionPricePoint) (upcomingMonth, error) {
 	y, m, err := parsePeriod(period)
 	if err != nil {
-		return upcomingMonth{}, err
-	}
-	type pricePoint struct {
-		amount                  int64
-		currency, effectiveFrom string
-	}
-	history := map[int][]pricePoint{}
-	historyRows, err := a.db.Query(`SELECT subscription_id,amount,currency,effective_from FROM subscription_price_history ORDER BY subscription_id,effective_from,id`)
-	if err != nil {
-		return upcomingMonth{}, err
-	}
-	for historyRows.Next() {
-		var id int
-		var point pricePoint
-		if err := historyRows.Scan(&id, &point.amount, &point.currency, &point.effectiveFrom); err != nil {
-			historyRows.Close()
-			return upcomingMonth{}, err
-		}
-		history[id] = append(history[id], point)
-	}
-	if err := historyRows.Close(); err != nil {
 		return upcomingMonth{}, err
 	}
 	last := time.Date(y, m+1, 0, 0, 0, 0, 0, a.location).Day()
@@ -489,10 +503,10 @@ func (a *application) loadPaymentOccurrences(period string) (upcomingMonth, erro
 			}
 		} else {
 			billDateText := billDate.Format("2006-01-02")
-			for _, point := range history[id] {
-				if point.effectiveFrom <= billDateText {
-					amount = point.amount
-					currency = point.currency
+			for _, point := range history[int64(id)] {
+				if point.EffectiveFrom <= billDateText {
+					amount = point.Amount
+					currency = point.Currency
 				} else {
 					break
 				}

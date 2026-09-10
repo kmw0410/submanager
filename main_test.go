@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -48,6 +49,30 @@ func jsonRequest(t *testing.T, method, target string, value any) (*http.Request,
 
 func compactSource(source string) string {
 	return strings.Join(strings.Fields(source), "")
+}
+
+func TestLoggingSkipsHealthChecks(t *testing.T) {
+	var output bytes.Buffer
+	previousOutput := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&output)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(previousOutput)
+		log.SetFlags(previousFlags)
+	})
+
+	handler := logging(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/health", nil))
+	if output.Len() != 0 {
+		t.Fatalf("health check was logged: %q", output.String())
+	}
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/state", nil))
+	if !strings.Contains(output.String(), "GET /api/state") {
+		t.Fatalf("ordinary request was not logged: %q", output.String())
+	}
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

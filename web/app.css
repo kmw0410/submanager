@@ -826,6 +826,27 @@ button.summary-card {
 .modal.wide {
   width: min(720px,100%);
 }
+.modal.subscription-modal {
+  --subscription-modal-padding: 27px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: var(--subscription-modal-padding) var(--subscription-modal-padding) 0;
+}
+.modal.subscription-modal #modalBody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  margin: 0 calc(var(--subscription-modal-padding) * -1);
+  padding: 0 var(--subscription-modal-padding) 24px;
+}
+.modal.subscription-modal #modalFooter {
+  flex: 0 0 auto;
+  margin: 0 calc(var(--subscription-modal-padding) * -1);
+  padding: 16px var(--subscription-modal-padding) 27px;
+  border-top: 1px solid var(--line);
+  background: inherit;
+}
 .modal-head {
   display: flex;
   justify-content: space-between;
@@ -985,13 +1006,7 @@ textarea {
   margin-right: auto;
 }
 .subscription-form-actions {
-  position: sticky;
-  bottom: -27px;
-  z-index: 1;
-  margin-top: 16px;
-  padding: 16px 0 27px;
-  border-top: 1px solid var(--line);
-  background: var(--card);
+  margin: 0;
 }
 .form-error {
   font-size: 12px;
@@ -1493,11 +1508,6 @@ textarea {
 }
 .optional-fields summary::-webkit-details-marker {
   display: none;
-}
-.optional-fields summary small {
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 500;
 }
 .optional-fields summary:after {
   content: "⌄";
@@ -2024,8 +2034,10 @@ textarea {
     max-height: 93dvh;
     padding-bottom: max(23px,env(safe-area-inset-bottom));
   }
-  .subscription-form-actions {
-    bottom: max(-23px,calc(env(safe-area-inset-bottom) - 23px));
+  .modal.subscription-modal {
+    --subscription-modal-padding: 18px;
+  }
+  .modal.subscription-modal #modalFooter {
     padding-bottom: max(23px,env(safe-area-inset-bottom));
   }
   .settings-tabs {
@@ -2149,6 +2161,9 @@ textarea {
   .modal.wide {
     padding-left: 15px;
     padding-right: 15px;
+  }
+  .modal.subscription-modal {
+    --subscription-modal-padding: 15px;
   }
   .modal-head {
     margin-bottom: 18px;

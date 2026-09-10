@@ -15,6 +15,7 @@
   const backdrop = document.querySelector("#modalBackdrop");
   const modal = backdrop.querySelector(".modal");
   const modalBody = document.querySelector("#modalBody");
+  const modalFooter = document.querySelector("#modalFooter");
   const modalTitle = document.querySelector("#modalTitle");
   const modalKicker = document.querySelector("#modalKicker");
   const pageRegions = [
@@ -780,6 +781,8 @@
     }
     modalTitle.textContent = title;
     modalKicker.textContent = kicker;
+    modal.classList.remove("subscription-modal");
+    modalFooter.innerHTML = "";
     backdrop.hidden = false;
     document.body.style.overflow = "hidden";
     setTimeout(() => firstModalControl()?.focus(), 0);
@@ -788,8 +791,9 @@
   function closeModal() {
     backdrop.hidden = true;
     document.body.style.overflow = "";
-    modal.classList.remove("wide");
+    modal.classList.remove("wide", "subscription-modal");
     modalBody.innerHTML = "";
+    modalFooter.innerHTML = "";
     pageRegions.forEach((region) => {
       region.inert = false;
     });
@@ -899,7 +903,7 @@
       edit ? `${s.ServiceName} 수정` : "구독 정보를 알려주세요",
       edit ? "구독 관리" : "구독 추가 · 2/2",
     );
-    modal.classList.add("wide");
+    modal.classList.add("wide", "subscription-modal");
     modalBody.innerHTML = `<form id="subscriptionForm"><div class="field-grid">
       <label class="field wide"><span>서비스명 *</span><input name="serviceName" required maxlength="80" value="${
       esc(s.ServiceName)
@@ -930,9 +934,7 @@
           esc(p.name)
         }</option>`
       ).join("")
-    }</select></label><details class="optional-fields wide" ${
-      s.TrialEndsAt || s.Category || s.Memo ? "open" : ""
-    }><summary><span>추가 옵션</span><small>무료 체험, 카테고리, 메모</small></summary><div class="optional-fields-body">
+    }</select></label><details class="optional-fields wide"><summary>추가 옵션</summary><div class="optional-fields-body">
       <label class="check-row trial-toggle"><span>무료 체험 사용${
       service?.SupportsTrial ? " · 이 서비스에서 지원해요" : ""
     }</span><span class="switch"><input name="isTrial" type="checkbox" ${
@@ -949,11 +951,7 @@
       <label class="field"><span>메모</span><textarea name="memo" maxlength="500" placeholder="함께 사용하는 사람이나 플랜을 적어두세요.">${
       esc(s.Memo)
     }</textarea></label></div></details>
-    </div><div class="form-error" id="formError"></div></form><div class="form-actions subscription-form-actions">${
-      !edit ? '<button class="button ghost left" type="button" id="backToPicker">이전</button>' : ""
-    }<button class="button primary" form="subscriptionForm" type="submit">${
-      edit ? "변경 저장" : "구독 추가"
-    }</button></div>
+    </div><div class="form-error" id="formError"></div></form>
     ${
       edit
         ? `<div class="edit-actions"><button class="button skip-action ${
@@ -963,6 +961,11 @@
         }</button><button class="button danger" type="button" id="cancelSub">구독 해지</button></div>`
         : ""
     }`;
+    modalFooter.innerHTML = `<div class="form-actions subscription-form-actions">${
+      !edit ? '<button class="button ghost left" type="button" id="backToPicker">이전</button>' : ""
+    }<button class="button primary" form="subscriptionForm" type="submit">${
+      edit ? "변경 저장" : "구독 추가"
+    }</button></div>`;
     document.querySelector("#backToPicker")?.addEventListener("click", openServicePicker);
     const trialToggle = document.querySelector('[name="isTrial"]');
     const syncTrial = () => {

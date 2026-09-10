@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#09090B">
   <script>(()=>{let preference='system';try{const saved=localStorage.getItem('submanager-theme');if(saved==='dark'||saved==='light')preference=saved}catch{}const media=matchMedia('(prefers-color-scheme: dark)'),theme=preference==='system'?(media.matches?'dark':'light'):preference;document.documentElement.dataset.theme=theme;document.documentElement.dataset.themePreference=preference;document.querySelector('meta[name="theme-color"]').content=theme==='dark'?'#09090B':'#F6F7F5'})();</script>
   <title>SubManager</title>
-  <link rel="stylesheet" href="/assets/app.css?v=20260910-subscription-form">
+  <link rel="stylesheet" href="/assets/app.css?v=20260910-subscription-footer">
   <style>
     /* Skipped subscriptions use a strong red treatment on dashboard cards. */
     .sub-card.skipped {
@@ -102,6 +102,7 @@
     <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle" tabindex="-1">
       <div class="modal-head"><div><span class="step-label" id="modalKicker"></span><h2 id="modalTitle"></h2></div><button class="close-button" type="button" data-close-modal aria-label="닫기"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
       <div id="modalBody"></div>
+      <div id="modalFooter"></div>
     </section>
   </div>
   <div class="toast-region" id="toasts" aria-live="polite"></div>
@@ -155,6 +156,6 @@
       }
     })();
   </script>
-  <script src="/assets/app.js?v=20260910-subscription-form" defer></script>
+  <script src="/assets/app.js?v=20260910-subscription-footer" defer></script>
 </body>
 </html>

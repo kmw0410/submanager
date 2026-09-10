@@ -1986,6 +1986,44 @@ textarea {
   .toast {
     width: 100%;
   }
+  .sidebar {
+    gap: 8px;
+  }
+  .sidebar .primary-metric {
+    grid-column: 1/-1;
+    order: -1;
+    min-height: 76px;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+  }
+  .sidebar .primary-metric strong {
+    max-width: 70%;
+    font-size: clamp(19px,6vw,24px);
+    text-align: right;
+  }
+  .sidebar .split-card,
+  .sidebar .secondary-metric {
+    grid-column: auto;
+    min-height: 68px;
+  }
+  .sidebar .split-card {
+    padding: 7px 2px;
+  }
+  .sidebar .split-card button {
+    gap: 4px;
+    padding: 0 10px;
+  }
+  .sidebar .secondary-metric {
+    padding: 12px;
+    gap: 4px;
+  }
+  .sidebar .secondary-metric strong,
+  .sidebar .secondary-metric strong:has(span+span) {
+    font-size: clamp(15px,4.5vw,19px);
+    line-height: 1.25;
+  }
   .auth-page {
     padding: 18px;
   }
@@ -2011,6 +2049,9 @@ textarea {
   }
   .summary-card strong {
     font-size: 18px;
+  }
+  .sidebar .primary-metric strong {
+    font-size: 20px;
   }
   .main {
     padding-left: 12px;

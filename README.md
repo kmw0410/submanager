@@ -44,7 +44,7 @@ docker compose logs submanager
 
 관리자를 만들기 전에 컨테이너를 재시작하면 이전 키는 폐기되고 새로운 키로 교체됩니다. 컨테이너 로그에 접근할 수 있는 사용자만 설정 키를 확인할 수 있도록 로그 접근 권한을 관리하세요.
 
-기본값은 `submanager-data` Docker 볼륨의 `/data/submanager.db`에 저장되며 필요한 경우 `submanager-data` 볼륨을 제거하고 호스트 맵핑으로 사용할 수 있습니다.
+기본값은 `submanager-data` Docker 볼륨의 `/data/submanager.db`에 저장됩니다. 기존 named volume 데이터를 원하는 호스트 폴더로 옮기려면 [데이터 마이그레이션 안내](MIGRATE.md)를 따르세요.
 
 ## 환경 변수
 

@@ -98,6 +98,11 @@ func main() {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		log.Fatal(err)
 	}
+	if alreadyComplete, err := migrateDataIfRequested(os.Getenv("MIGRATE_DATA"), dbPath, env("MIGRATE_DATA_SOURCE", "/migration-source/submanager.db")); err != nil {
+		log.Fatalf("data migration: %v", err)
+	} else if alreadyComplete {
+		log.Print("migrate is already complete. skipping environment")
+	}
 	db, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=on&_busy_timeout=5000&_journal_mode=WAL")
 	if err != nil {
 		log.Fatal(err)

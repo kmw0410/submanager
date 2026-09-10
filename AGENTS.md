@@ -23,8 +23,16 @@ submanager/
 ├── compose.yaml
 ├── go.mod
 ├── go.sum
-├── main.go
+├── auth.go
+├── backup.go
+├── dashboard.go
+├── http.go
+├── migrations.go
 ├── main_test.go
+├── notifications.go
+├── server.go
+├── settings.go
+├── subscriptions.go
 └── web/
     ├── app.css
     ├── app.js
@@ -33,8 +41,9 @@ submanager/
 ```
 
 ## 3. Architecture
-- Application entry point and HTTP server: `main.go`
-  - Environment loading, SQLite setup, migrations and seeds, route registration, middleware, notification worker, and graceful shutdown.
+- Application entry point and HTTP server: `server.go`
+  - Environment loading, SQLite setup, route registration, middleware, notification worker, and graceful shutdown.
+- Application code is split by responsibility within the same `main` package: authentication (`auth.go`), migrations and seeds (`migrations.go`), dashboard and ICS (`dashboard.go`), subscriptions (`subscriptions.go`), settings (`settings.go`), and shared HTTP/utilities (`http.go`).
 - Storage: SQLite through `database/sql` and `github.com/mattn/go-sqlite3`.
   - The database uses foreign keys, a busy timeout, WAL mode, and one open connection.
 - Authentication:
@@ -71,7 +80,7 @@ Typical runtime data path:
 - When a regression or unexpected behavior is reported, inspect relevant version history first when repository history is available.
 
 ## 5. Data Model and Migrations
-The schema is created and evolved by `application.migrate` in `main.go`.
+The schema is created and evolved by `application.migrate` in `migrations.go`.
 
 Important tables:
 - `users`: the single administrator profile and password hash.
@@ -134,7 +143,7 @@ Seed rules:
 - Do not include password hashes, raw session tokens, notification credentials, or authentication secrets in operational logs.
 
 ## 9. HTTP API and Validation
-Current routes are registered in `main.go` with Go's method-aware `http.ServeMux` patterns.
+Current routes are registered in `server.go` with Go's method-aware `http.ServeMux` patterns.
 
 Public routes:
 - `GET /`
@@ -231,7 +240,7 @@ The SQLite driver requires CGO and a C compiler.
 
 Run before handing off Go changes:
 ```bash
-gofmt -w main.go main_test.go
+gofmt -w *.go
 go test ./...
 go vet ./...
 go build ./...

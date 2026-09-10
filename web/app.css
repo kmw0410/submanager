@@ -37,6 +37,9 @@
 * {
   box-sizing: border-box;
 }
+[hidden] {
+  display: none !important;
+}
 html {
   background: var(--bg);
 }
@@ -981,6 +984,15 @@ textarea {
 .form-actions .left {
   margin-right: auto;
 }
+.subscription-form-actions {
+  position: sticky;
+  bottom: -27px;
+  z-index: 1;
+  margin-top: 16px;
+  padding: 16px 0 27px;
+  border-top: 1px solid var(--line);
+  background: var(--card);
+}
 .form-error {
   font-size: 12px;
   color: #E5A4A4;
@@ -1462,6 +1474,44 @@ textarea {
 }
 .trial-toggle {
   padding: 4px 0;
+}
+.optional-fields {
+  grid-column: 1/-1;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--card);
+}
+.optional-fields summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  cursor: pointer;
+  list-style: none;
+  font-weight: 650;
+}
+.optional-fields summary::-webkit-details-marker {
+  display: none;
+}
+.optional-fields summary small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+.optional-fields summary:after {
+  content: "⌄";
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+}
+.optional-fields[open] summary:after {
+  transform: rotate(180deg);
+}
+.optional-fields-body {
+  display: grid;
+  gap: 15px;
+  padding: 0 14px 14px;
 }
 .upcoming-row {
   padding-left: 19px;
@@ -1974,6 +2024,10 @@ textarea {
     max-height: 93dvh;
     padding-bottom: max(23px,env(safe-area-inset-bottom));
   }
+  .subscription-form-actions {
+    bottom: max(-23px,calc(env(safe-area-inset-bottom) - 23px));
+    padding-bottom: max(23px,env(safe-area-inset-bottom));
+  }
   .settings-tabs {
     scrollbar-width: thin;
     overscroll-behavior-inline: contain;
@@ -2065,6 +2119,16 @@ textarea {
   }
   .form-actions .left {
     margin-right: 0;
+  }
+  .subscription-form-actions {
+    display: flex;
+    grid-template-columns: none;
+  }
+  .subscription-form-actions .button {
+    width: auto;
+  }
+  .subscription-form-actions .left {
+    margin-right: auto;
   }
   .form-actions .button,
   .edit-actions .button,

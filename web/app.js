@@ -930,8 +930,10 @@
           esc(p.name)
         }</option>`
       ).join("")
-    }</select></label>
-      <label class="check-row wide trial-toggle"><span>무료 체험 사용${
+    }</select></label><details class="optional-fields wide" ${
+      s.TrialEndsAt || s.Category || s.Memo ? "open" : ""
+    }><summary><span>추가 옵션</span><small>무료 체험, 카테고리, 메모</small></summary><div class="optional-fields-body">
+      <label class="check-row trial-toggle"><span>무료 체험 사용${
       service?.SupportsTrial ? " · 이 서비스에서 지원해요" : ""
     }</span><span class="switch"><input name="isTrial" type="checkbox" ${
       s.TrialEndsAt ? "checked" : ""
@@ -944,14 +946,14 @@
       <label class="field"><span>카테고리</span><input name="category" maxlength="40" value="${
       esc(s.Category)
     }" placeholder="음악, AI, 영상"></label>
-      <label class="field wide"><span>메모</span><textarea name="memo" maxlength="500" placeholder="함께 사용하는 사람이나 플랜을 적어두세요.">${
+      <label class="field"><span>메모</span><textarea name="memo" maxlength="500" placeholder="함께 사용하는 사람이나 플랜을 적어두세요.">${
       esc(s.Memo)
-    }</textarea></label>
-    </div><div class="form-error" id="formError"></div><div class="form-actions">${
+    }</textarea></label></div></details>
+    </div><div class="form-error" id="formError"></div></form><div class="form-actions subscription-form-actions">${
       !edit ? '<button class="button ghost left" type="button" id="backToPicker">이전</button>' : ""
-    }<button class="button ghost" type="button" data-close-modal>취소</button><button class="button primary" type="submit">${
+    }<button class="button primary" form="subscriptionForm" type="submit">${
       edit ? "변경 저장" : "구독 추가"
-    }</button></div></form>
+    }</button></div>
     ${
       edit
         ? `<div class="edit-actions"><button class="button skip-action ${

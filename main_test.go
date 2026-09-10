@@ -82,6 +82,28 @@ func TestLoggingSkipsHealthChecks(t *testing.T) {
 	}
 }
 
+func TestSubscriptionFormKeepsActionsVisibleAndOptionsCollapsible(t *testing.T) {
+	jsSource, err := webFS.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`class="optional-fields wide"`, `무료 체험, 카테고리, 메모`, `class="form-actions subscription-form-actions"`, `form="subscriptionForm"`} {
+		if !strings.Contains(string(jsSource), want) {
+			t.Fatalf("subscription form source is missing %q", want)
+		}
+	}
+	cssSource, err := webFS.ReadFile("web/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := compactSource(string(cssSource))
+	for _, rule := range []string{`[hidden]{display:none!important`, `.subscription-form-actions{position:sticky`, `.optional-fields{grid-column:1/-1`} {
+		if !strings.Contains(css, compactSource(rule)) {
+			t.Fatalf("subscription form style is missing %q", rule)
+		}
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -973,7 +995,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 	if strings.Contains(html, `>×</button>`) || strings.Contains(html, `<span>+</span>`) {
 		t.Fatal("header and modal action icons must use SVG")
 	}
-	if !strings.Contains(html, `href="/assets/app.css?v=20260910-mobile-summary"`) || !strings.Contains(html, `src="/assets/app.js?v=20260910-mobile-summary"`) {
+	if !strings.Contains(html, `href="/assets/app.css?v=20260910-subscription-form"`) || !strings.Contains(html, `src="/assets/app.js?v=20260910-subscription-form"`) {
 		t.Fatal("dashboard assets must use the current cache version")
 	}
 	authSource, err := webFS.ReadFile("web/auth.html")
@@ -981,7 +1003,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := string(authSource)
-	if !strings.Contains(auth, `href="/assets/app.css?v=20260910-mobile-summary"`) {
+	if !strings.Contains(auth, `href="/assets/app.css?v=20260910-subscription-form"`) {
 		t.Fatal("authentication stylesheet must use the current cache version")
 	}
 	for _, want := range []string{`name="setupToken"`, `minlength="48" maxlength="48"`, `docker compose logs submanager`} {

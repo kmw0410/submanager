@@ -14,6 +14,14 @@
     (state.currencies || []).map((currency) => [currency.code, currency.digits]),
   );
   const currencyFormatters = new Map();
+  function replaceState(nextState) {
+    state = nextState;
+    currencyDigitsByCode.clear();
+    (state.currencies || []).forEach((currency) =>
+      currencyDigitsByCode.set(currency.code, currency.digits)
+    );
+    currencyFormatters.clear();
+  }
   let upcomingRequest = 0;
   const main = document.querySelector("#main");
   const backdrop = document.querySelector("#modalBackdrop");
@@ -1694,7 +1702,7 @@
     });
   }
   async function reloadAndSettings(tab) {
-    state = await api("/api/state");
+    replaceState(await api("/api/state"));
     openSettings();
     document.querySelector(`[data-tab="${tab}"]`)?.click();
   }
@@ -1718,7 +1726,7 @@
     return data;
   }
   async function refresh() {
-    state = await api("/api/state");
+    replaceState(await api("/api/state"));
     upcomingMonths.clear();
     render();
   }

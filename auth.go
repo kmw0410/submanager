@@ -8,11 +8,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"golang.org/x/crypto/bcrypt"
-	"log"
 	"net"
 	"net/http"
 	"net/mail"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -107,11 +105,6 @@ func (a *application) setupAccount(w http.ResponseWriter, r *http.Request) {
 	if err := a.createSession(w, r, 1); err != nil {
 		a.fail(w, err)
 		return
-	}
-	if a.setupTokenPath != "" {
-		if err := os.Remove(a.setupTokenPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			log.Printf("remove setup token file: %v", err)
-		}
 	}
 	a.authLimiter.reset(keys...)
 	writeJSON(w, http.StatusCreated, map[string]bool{"ok": true})
@@ -211,19 +204,12 @@ func newSessionCredentials() (string, string, time.Time, error) {
 	return token, hex.EncodeToString(sum[:]), expires, nil
 }
 
-func createSetupTokenFile(path string) (string, error) {
+func newSetupToken() (string, error) {
 	raw := make([]byte, 24)
 	if _, err := rand.Read(raw); err != nil {
 		return "", err
 	}
-	token := hex.EncodeToString(raw)
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
-	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
-		return "", err
-	}
-	return token, nil
+	return hex.EncodeToString(raw), nil
 }
 
 func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expires time.Time) {

@@ -27,7 +27,6 @@ type application struct {
 	authTpl                *template.Template
 	location               *time.Location
 	setupToken             string
-	setupTokenPath         string
 	authLimiter            *attemptLimiter
 	notificationHTTPClient *http.Client
 }
@@ -122,15 +121,16 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	app.setupTokenPath = filepath.Join(filepath.Dir(dbPath), ".submanager-setup-token")
+	legacySetupTokenPath := filepath.Join(filepath.Dir(dbPath), ".submanager-setup-token")
+	if err := os.Remove(legacySetupTokenPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Printf("remove legacy setup token file: %v", err)
+	}
 	if !accountExists {
-		app.setupToken, err = createSetupTokenFile(app.setupTokenPath)
+		app.setupToken, err = newSetupToken()
 		if err != nil {
 			log.Fatal(err)
 		}
-		log.Printf("Initial setup token created at %s", app.setupTokenPath)
-	} else if err := os.Remove(app.setupTokenPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Printf("remove stale setup token file: %v", err)
+		log.Printf("Initial setup token: %s", app.setupToken)
 	}
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()

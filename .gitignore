@@ -6,4 +6,5 @@
 submanager-backup-*.json
 *.log
 .env
+# Local work log; retain outside commits unless explicitly requested.
 /WORK.md

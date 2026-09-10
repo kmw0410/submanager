@@ -16,6 +16,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
 //go:embed web/*

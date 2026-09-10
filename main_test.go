@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -35,6 +34,15 @@ func newTestApplication(t *testing.T) *application {
 		t.Fatal(err)
 	}
 	return a
+}
+
+func TestSQLiteDriverIsRegistered(t *testing.T) {
+	for _, driver := range sql.Drivers() {
+		if driver == "sqlite3" {
+			return
+		}
+	}
+	t.Fatal("sqlite3 driver is not registered")
 }
 
 func jsonRequest(t *testing.T, method, target string, value any) (*http.Request, *httptest.ResponseRecorder) {

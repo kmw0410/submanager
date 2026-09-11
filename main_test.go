@@ -1034,7 +1034,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	css := compactSource(string(cssSource))
-	for _, rule := range []string{".main:focus{outline:none", ".upcoming-row .sub-content{min-width:0;grid-column:1/-1", "#addSubscriptionButton{height:39px", ".skip-status{display:inline-flex", ".sub-card.skipped{opacity:1;border:2px solid", ".button.skip-action{color:", ".sidebar .primary-metric{grid-column:1/-1;order:-1;min-height:76px", ".sidebar .split-card,.sidebar .secondary-metric{grid-column:auto;min-height:68px"} {
+	for _, rule := range []string{".main:focus{outline:none", ".upcoming-row .sub-content{min-width:0;grid-column:1/-1", "#addSubscriptionButton{height:39px", ".skip-status{display:inline-flex", ".sub-card.skipped{opacity:1;border:2px solid", ".button.skip-action{color:", ".sidebar .primary-metric{grid-column:1/-1;order:-1;min-height:76px", ".sidebar .nav-card{grid-column:auto;min-height:68px", ".sidebar .secondary-metric{grid-column:1/-1;min-height:68px"} {
 		if !strings.Contains(css, compactSource(rule)) {
 			t.Fatalf("missing presentation rule %q", rule)
 		}
@@ -1056,7 +1056,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := string(htmlSource)
-	for _, want := range []string{`primary-metric`, `secondary-metric`} {
+	for _, want := range []string{`primary-metric`, `secondary-metric`, `class="summary-card nav-card"`, `class="summary-card nav-card upcoming-nav-card"`, `구독 관리`, `결제 일정 보기`} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("mobile summary markup is missing %q", want)
 		}
@@ -1075,7 +1075,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 	if strings.Contains(html, `>×</button>`) || strings.Contains(html, `<span>+</span>`) {
 		t.Fatal("header and modal action icons must use SVG")
 	}
-	if !strings.Contains(html, `href="/assets/app.css?v=20260910-subscription-footer"`) || !strings.Contains(html, `src="/assets/app.js?v=20260911-dashboard-state-cache"`) {
+	if !strings.Contains(html, `href="/assets/app.css?v=20260911-sidebar-navigation"`) || !strings.Contains(html, `src="/assets/app.js?v=20260911-sidebar-navigation"`) {
 		t.Fatal("dashboard assets must use the current cache version")
 	}
 	authSource, err := webFS.ReadFile("web/auth.html")
@@ -1083,7 +1083,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := string(authSource)
-	if !strings.Contains(auth, `href="/assets/app.css?v=20260910-subscription-footer"`) {
+	if !strings.Contains(auth, `href="/assets/app.css?v=20260911-sidebar-navigation"`) {
 		t.Fatal("authentication stylesheet must use the current cache version")
 	}
 	for _, want := range []string{`name="setupToken"`, `minlength="48" maxlength="48"`, `docker compose logs submanager`} {

@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#09090B">
   <script>(()=>{let preference='system';try{const saved=localStorage.getItem('submanager-theme');if(saved==='dark'||saved==='light')preference=saved}catch{}const media=matchMedia('(prefers-color-scheme: dark)'),theme=preference==='system'?(media.matches?'dark':'light'):preference;document.documentElement.dataset.theme=theme;document.documentElement.dataset.themePreference=preference;document.querySelector('meta[name="theme-color"]').content=theme==='dark'?'#09090B':'#F6F7F5'})();</script>
   <title>SubManager</title>
-  <link rel="stylesheet" href="/assets/app.css?v=20260910-subscription-footer">
+  <link rel="stylesheet" href="/assets/app.css?v=20260911-sidebar-navigation">
   <style>
     /* Skipped subscriptions use a strong red treatment on dashboard cards. */
     .sub-card.skipped {
@@ -83,15 +83,21 @@
   </header>
 
   <div class="layout">
-    <aside class="sidebar" aria-label="구독 요약">
-      <section class="summary-card split-card">
-        <button type="button" data-view="subscriptions"><span class="eyebrow">구독</span><strong id="activeCount">0개</strong></button>
-        <button type="button" data-view="upcoming"><span class="eyebrow">결제 예정</span><strong id="upcomingCount">0건</strong></button>
-      </section>
-    <button class="summary-card metric-card primary-metric" type="button" data-view="dashboard">
+    <aside class="sidebar" aria-label="구독 요약 및 탐색">
+      <button class="summary-card nav-card" type="button" data-view="subscriptions">
+        <span class="eyebrow">구독</span>
+        <strong id="activeCount">0개</strong>
+        <span class="summary-link">구독 관리 <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></span>
+      </button>
+      <button class="summary-card nav-card upcoming-nav-card" type="button" data-view="upcoming">
+        <span class="eyebrow">결제 예정</span>
+        <strong id="upcomingCount">0건</strong>
+        <span class="summary-link">결제 일정 보기 <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></span>
+      </button>
+      <button class="summary-card metric-card primary-metric" type="button" data-view="dashboard">
         <span class="eyebrow">이번 달</span><strong id="monthTotal">₩0</strong>
       </button>
-    <button class="summary-card metric-card secondary-metric" type="button" data-view="dashboard">
+      <button class="summary-card metric-card secondary-metric" type="button" data-view="dashboard">
         <span class="eyebrow">1년 예상</span><strong id="yearTotal">₩0</strong>
       </button>
     </aside>
@@ -156,6 +162,6 @@
       }
     })();
   </script>
-  <script src="/assets/app.js?v=20260911-dashboard-state-cache" defer></script>
+  <script src="/assets/app.js?v=20260911-sidebar-navigation" defer></script>
 </body>
 </html>

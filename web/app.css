@@ -188,27 +188,30 @@ button.summary-card {
   border-color: var(--line-strong);
   background: #18181A;
 }
-.split-card {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  align-items: center;
-  padding: 21px 9px;
-}
-.split-card button {
-  border: 0;
-  background: transparent;
-  min-width: 0;
-  height: 100%;
+.nav-card {
+  width: 100%;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   justify-content: center;
-  padding: 0 16px;
-  gap: 8px;
-  border-radius: 12px;
+  padding: 21px 24px;
+  gap: 7px;
+  text-align: left;
 }
-.split-card button:hover {
-  background: #1b1b1e;
+.summary-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 2px;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 650;
+}
+.summary-link svg {
+  width: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
 }
 .eyebrow {
   font-size: 13px;
@@ -1627,9 +1630,6 @@ textarea {
 :root[data-theme=light] .list-row:not(.list-labels):hover {
   background: #F1F4F1;
 }
-:root[data-theme=light] .split-card button:hover {
-  background: #E9EEE9;
-}
 :root[data-theme=light] .chart-tooltip {
   background: #28312B;
   color: #FFFFFF;
@@ -1709,11 +1709,8 @@ textarea {
   .summary-card {
     min-height: 108px;
   }
-  .split-card {
-    padding: 14px 6px;
-  }
-  .split-card button {
-    padding: 0 12px;
+  .nav-card {
+    padding: 18px;
   }
   .metric-card {
     padding: 18px;
@@ -1746,10 +1743,6 @@ textarea {
     grid-template-columns: 1fr 1fr;
     padding: 14px;
     gap: 9px;
-  }
-  .split-card {
-    grid-column: 1/-1;
-    min-height: 96px;
   }
   .metric-card {
     min-height: 90px;
@@ -1913,7 +1906,6 @@ textarea {
     grid-template-columns: minmax(0,1.45fr) minmax(0,1fr) minmax(0,1fr);
   }
   .summary-card,
-  .split-card button,
   .metric-card {
     min-width: 0;
   }
@@ -2069,19 +2061,21 @@ textarea {
     font-size: clamp(19px,6vw,24px);
     text-align: right;
   }
-  .sidebar .split-card,
-  .sidebar .secondary-metric {
+  .sidebar .nav-card {
     grid-column: auto;
     min-height: 68px;
   }
-  .sidebar .split-card {
-    padding: 7px 2px;
+  .sidebar .nav-card {
+    padding: 12px;
+    gap: 3px;
   }
-  .sidebar .split-card button {
-    gap: 4px;
-    padding: 0 10px;
+  .sidebar .nav-card .summary-link {
+    margin-top: 0;
+    font-size: 11px;
   }
   .sidebar .secondary-metric {
+    grid-column: 1/-1;
+    min-height: 68px;
     padding: 12px;
     gap: 4px;
   }

@@ -1088,7 +1088,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 	if strings.Contains(html, `>×</button>`) || strings.Contains(html, `<span>+</span>`) {
 		t.Fatal("header and modal action icons must use SVG")
 	}
-	if !strings.Contains(html, `href="/assets/app.css?v=20260911-pwa-test-fix"`) || !strings.Contains(html, `src="/assets/app.js?v=20260911-pwa-test-fix"`) {
+	if !strings.Contains(html, `href="/assets/app.css?v=20260911-pwa-subscription-fix"`) || !strings.Contains(html, `src="/assets/app.js?v=20260911-pwa-subscription-fix"`) {
 		t.Fatal("dashboard assets must use the current cache version")
 	}
 	authSource, err := webFS.ReadFile("web/auth.html")
@@ -1096,7 +1096,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := string(authSource)
-	if !strings.Contains(auth, `href="/assets/app.css?v=20260911-pwa-test-fix"`) {
+	if !strings.Contains(auth, `href="/assets/app.css?v=20260911-pwa-subscription-fix"`) {
 		t.Fatal("authentication stylesheet must use the current cache version")
 	}
 	for _, want := range []string{`name="setupToken"`, `minlength="48" maxlength="48"`, `docker compose logs submanager`} {
@@ -1124,6 +1124,7 @@ func TestIntegrationSettingsAndPWAControls(t *testing.T) {
 		`data-test="pwa">PWA 테스트</button>`,
 		`const body = { channel: b.dataset.test };`,
 		`/api/pwa/subscriptions`,
+		`const subscriptionJSON = subscription.toJSON();`,
 		`serviceWorker.register("/sw.js")`,
 	} {
 		if !strings.Contains(js, want) {
@@ -1168,8 +1169,9 @@ func TestPWAPushSubscriptionValidationAndKeys(t *testing.T) {
 	validKey := base64.RawURLEncoding.EncodeToString(make([]byte, 65))
 	validAuth := base64.RawURLEncoding.EncodeToString(make([]byte, 16))
 	request, recorder := jsonRequest(t, http.MethodPost, "/api/pwa/subscriptions", map[string]any{
-		"endpoint": "https://push.example.test/subscription",
-		"keys":     map[string]string{"p256dh": validKey, "auth": validAuth},
+		"endpoint":       "https://push.example.test/subscription",
+		"expirationTime": nil,
+		"keys":           map[string]string{"p256dh": validKey, "auth": validAuth},
 	})
 	a.savePWASubscription(recorder, request)
 	if recorder.Code != http.StatusCreated {

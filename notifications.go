@@ -309,8 +309,9 @@ func (a *application) pwaPublicKey(w http.ResponseWriter, _ *http.Request) {
 
 func (a *application) savePWASubscription(w http.ResponseWriter, r *http.Request) {
 	var v struct {
-		Endpoint string `json:"endpoint"`
-		Keys     struct {
+		Endpoint       string `json:"endpoint"`
+		ExpirationTime any    `json:"expirationTime"`
+		Keys           struct {
 			P256DH string `json:"p256dh"`
 			Auth   string `json:"auth"`
 		} `json:"keys"`

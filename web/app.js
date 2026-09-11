@@ -1730,7 +1730,17 @@
           userVisibleOnly: true,
           applicationServerKey: urlBase64ToUint8Array(publicKey),
         });
-        await api("/api/pwa/subscriptions", { method: "POST", body: subscription.toJSON() });
+        const subscriptionJSON = subscription.toJSON();
+        await api("/api/pwa/subscriptions", {
+          method: "POST",
+          body: {
+            endpoint: subscription.endpoint,
+            keys: {
+              p256dh: subscriptionJSON.keys?.p256dh,
+              auth: subscriptionJSON.keys?.auth,
+            },
+          },
+        });
         toast("이 기기의 PWA 결제 알림을 켰어요.");
       } catch (err) {
         toast(err.message || "PWA 푸시 알림을 켜지 못했어요.", true);

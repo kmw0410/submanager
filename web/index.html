@@ -7,7 +7,7 @@
   <script>(()=>{let preference='system';try{const saved=localStorage.getItem('submanager-theme');if(saved==='dark'||saved==='light')preference=saved}catch{}const media=matchMedia('(prefers-color-scheme: dark)'),theme=preference==='system'?(media.matches?'dark':'light'):preference;document.documentElement.dataset.theme=theme;document.documentElement.dataset.themePreference=preference;document.querySelector('meta[name="theme-color"]').content=theme==='dark'?'#09090B':'#F6F7F5'})();</script>
   <title>SubManager</title>
   <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="/assets/app.css?v=20260911-pwa-subscription-fix">
+  <link rel="stylesheet" href="/assets/app.css?v=20260911-pwa-install-copy">
   <style>
     /* Skipped subscriptions use a strong red treatment on dashboard cards. */
     .sub-card.skipped {
@@ -166,6 +166,6 @@
       }
     })();
   </script>
-  <script src="/assets/app.js?v=20260911-pwa-subscription-fix" defer></script>
+  <script src="/assets/app.js?v=20260911-pwa-install-copy" defer></script>
 </body>
 </html>

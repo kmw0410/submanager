@@ -1286,13 +1286,14 @@
           <div>
             ${integrationToggle("pwaEnabled", "PWA", pwaEnabled)}
             <p class="help">SubManager를 앱처럼 설치해 빠르게 열고, 기기 푸시로 결제 예정 알림을 받을 수 있어요.</p>
+            <p class="help">브라우저 메뉴에서 “홈 화면에 추가”를 선택해 설치할 수 있어요.</p>
           </div>
           ${pwaEnabled ? `<div class="pwa-actions">
             ${pwaInstalled()
               ? '<p class="help">이 기기에 이미 설치되어 있어요.</p>'
               : deferredInstallPrompt
                 ? '<button class="button ghost" type="button" id="installPWA">앱으로 설치</button>'
-                : '<p class="help">브라우저 메뉴에서 “홈 화면에 추가”를 선택해 설치할 수 있어요.</p>'}
+                : ""}
             ${pwaPushSupported()
               ? '<button class="button ghost" type="button" id="enablePWAPush">이 기기의 푸시 알림 켜기</button><button class="button ghost" type="button" id="disablePWAPush">이 기기의 푸시 알림 끄기</button><button class="button ghost" type="button" data-test="pwa">PWA 테스트</button>'
               : '<p class="help">푸시 알림은 HTTPS에서 지원하는 브라우저로 열어 주세요.</p>'}

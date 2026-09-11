@@ -1088,7 +1088,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 	if strings.Contains(html, `>×</button>`) || strings.Contains(html, `<span>+</span>`) {
 		t.Fatal("header and modal action icons must use SVG")
 	}
-	if !strings.Contains(html, `href="/assets/app.css?v=20260911-pwa-subscription-fix"`) || !strings.Contains(html, `src="/assets/app.js?v=20260911-pwa-subscription-fix"`) {
+	if !strings.Contains(html, `href="/assets/app.css?v=20260911-pwa-install-copy"`) || !strings.Contains(html, `src="/assets/app.js?v=20260911-pwa-install-copy"`) {
 		t.Fatal("dashboard assets must use the current cache version")
 	}
 	authSource, err := webFS.ReadFile("web/auth.html")
@@ -1096,7 +1096,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := string(authSource)
-	if !strings.Contains(auth, `href="/assets/app.css?v=20260911-pwa-subscription-fix"`) {
+	if !strings.Contains(auth, `href="/assets/app.css?v=20260911-pwa-install-copy"`) {
 		t.Fatal("authentication stylesheet must use the current cache version")
 	}
 	for _, want := range []string{`name="setupToken"`, `minlength="48" maxlength="48"`, `docker compose logs submanager`} {

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,12 +16,79 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/SherClockHolmes/webpush-go"
 )
 
 var (
 	discordWebhookPathPattern = regexp.MustCompile(`^/api/webhooks/[0-9]+/[A-Za-z0-9._-]+$`)
 	telegramBotTokenPattern   = regexp.MustCompile(`^[0-9]{1,20}:[A-Za-z0-9_-]{20,200}$`)
 )
+
+type pwaPushSubscription struct {
+	Endpoint string
+	P256DH   string
+	Auth     string
+}
+
+func validVAPIDKeys(privateKey, publicKey string) bool {
+	private, privateErr := base64.RawURLEncoding.DecodeString(strings.TrimSpace(privateKey))
+	public, publicErr := base64.RawURLEncoding.DecodeString(strings.TrimSpace(publicKey))
+	return privateErr == nil && publicErr == nil && len(private) == 32 && len(public) == 65
+}
+
+func validPWASubscription(subscription pwaPushSubscription) bool {
+	endpoint, err := url.Parse(strings.TrimSpace(subscription.Endpoint))
+	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || len(subscription.Endpoint) > 2048 {
+		return false
+	}
+	p256dh, p256dhErr := base64.RawURLEncoding.DecodeString(strings.TrimSpace(subscription.P256DH))
+	auth, authErr := base64.RawURLEncoding.DecodeString(strings.TrimSpace(subscription.Auth))
+	return p256dhErr == nil && authErr == nil && len(p256dh) == 65 && len(auth) == 16
+}
+
+func validPWASubscriptions(subscriptions []pwaPushSubscription) bool {
+	for _, subscription := range subscriptions {
+		if !validPWASubscription(subscription) {
+			return false
+		}
+	}
+	return true
+}
+
+func (a *application) vapidKeys() (privateKey, publicKey string, err error) {
+	load := func() error {
+		return a.db.QueryRow(`SELECT value FROM app_metadata WHERE key='pwa_vapid_private'`).Scan(&privateKey)
+	}
+	if err = load(); err == nil {
+		err = a.db.QueryRow(`SELECT value FROM app_metadata WHERE key='pwa_vapid_public'`).Scan(&publicKey)
+		if err == nil && validVAPIDKeys(privateKey, publicKey) {
+			return privateKey, publicKey, nil
+		}
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", "", err
+	}
+	privateKey, publicKey, err = webpush.GenerateVAPIDKeys()
+	if err != nil {
+		return "", "", err
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return "", "", err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`INSERT INTO app_metadata(key,value) VALUES('pwa_vapid_private',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, privateKey); err == nil {
+		_, err = tx.Exec(`INSERT INTO app_metadata(key,value) VALUES('pwa_vapid_public',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, publicKey)
+	}
+	if err != nil {
+		return "", "", err
+	}
+	if err = tx.Commit(); err != nil {
+		return "", "", err
+	}
+	return privateKey, publicKey, nil
+}
 
 func validateDiscordWebhook(value string) (string, error) {
 	value = strings.TrimSpace(value)
@@ -159,6 +228,23 @@ func (a *application) testNotification(w http.ResponseWriter, r *http.Request) {
 			upcomingNotificationItem("테스트 결제항목 2", 990, "USD"),
 		},
 	}
+	if v.Channel == "pwa" {
+		var enabled bool
+		if err := a.db.QueryRow(`SELECT pwa_enabled FROM notification_channels WHERE id=1`).Scan(&enabled); err != nil {
+			a.fail(w, err)
+			return
+		}
+		if !enabled {
+			bad(w, "PWA 알림을 먼저 켜 주세요")
+			return
+		}
+		if _, err := a.sendPWANotification(notification); err != nil {
+			bad(w, "PWA 알림을 보내지 못했어요. 이 기기의 푸시 알림을 켜 주세요")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
 	client := a.notificationClient()
 	var req *http.Request
 	var err error
@@ -204,6 +290,55 @@ func (a *application) testNotification(w http.ResponseWriter, r *http.Request) {
 	if resp.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 500))
 		bad(w, "알림 서비스가 요청을 거절했어요")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (a *application) pwaPublicKey(w http.ResponseWriter, _ *http.Request) {
+	_, publicKey, err := a.vapidKeys()
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"publicKey": publicKey})
+}
+
+func (a *application) savePWASubscription(w http.ResponseWriter, r *http.Request) {
+	var v struct {
+		Endpoint string `json:"endpoint"`
+		Keys     struct {
+			P256DH string `json:"p256dh"`
+			Auth   string `json:"auth"`
+		} `json:"keys"`
+	}
+	if !decode(w, r, &v) {
+		return
+	}
+	subscription := pwaPushSubscription{Endpoint: strings.TrimSpace(v.Endpoint), P256DH: strings.TrimSpace(v.Keys.P256DH), Auth: strings.TrimSpace(v.Keys.Auth)}
+	if !validPWASubscription(subscription) {
+		bad(w, "PWA 푸시 구독 정보를 확인해 주세요")
+		return
+	}
+	if _, err := a.db.Exec(`INSERT INTO pwa_push_subscriptions(endpoint,p256dh,auth,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(endpoint) DO UPDATE SET p256dh=excluded.p256dh,auth=excluded.auth,updated_at=CURRENT_TIMESTAMP`, subscription.Endpoint, subscription.P256DH, subscription.Auth); err != nil {
+		a.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]bool{"ok": true})
+}
+
+func (a *application) deletePWASubscription(w http.ResponseWriter, r *http.Request) {
+	var v struct{ Endpoint string }
+	if !decode(w, r, &v) {
+		return
+	}
+	endpoint, err := url.Parse(strings.TrimSpace(v.Endpoint))
+	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || len(v.Endpoint) > 2048 {
+		bad(w, "PWA 푸시 구독 정보를 확인해 주세요")
+		return
+	}
+	if _, err := a.db.Exec(`DELETE FROM pwa_push_subscriptions WHERE endpoint=?`, strings.TrimSpace(v.Endpoint)); err != nil {
+		a.fail(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -274,7 +409,7 @@ func upcomingNotificationItem(serviceName string, amount int64, currency string)
 }
 
 // Change and monthly-summary notifications are intentionally disabled.
-// Discord and Telegram only receive grouped upcoming-payment notifications.
+// Discord, Telegram, and PWA push only receive grouped upcoming-payment notifications.
 func (a *application) notifyChange(_ string) {}
 
 func (a *application) deliverOnce(key string, notification upcomingNotification) {
@@ -313,10 +448,79 @@ func discordWebhookPayload(message string) map[string]any {
 	}
 }
 
+func pwaPushPayload(notification upcomingNotification) map[string]string {
+	return map[string]string{
+		"title": "🔔 결제 예정",
+		"body":  notification.plainText(),
+		"tag":   "submanager-upcoming",
+		"url":   "/",
+	}
+}
+
+func (a *application) sendPWANotification(notification upcomingNotification) (int, error) {
+	privateKey, publicKey, err := a.vapidKeys()
+	if err != nil {
+		return 0, err
+	}
+	var email string
+	if err = a.db.QueryRow(`SELECT email FROM users WHERE id=1`).Scan(&email); err != nil {
+		return 0, err
+	}
+	rows, err := a.db.Query(`SELECT endpoint,p256dh,auth FROM pwa_push_subscriptions`)
+	if err != nil {
+		return 0, err
+	}
+	var subscriptions []pwaPushSubscription
+	for rows.Next() {
+		var subscription pwaPushSubscription
+		if err = rows.Scan(&subscription.Endpoint, &subscription.P256DH, &subscription.Auth); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		subscriptions = append(subscriptions, subscription)
+	}
+	if err = rows.Close(); err != nil {
+		return 0, err
+	}
+	payload, _ := json.Marshal(pwaPushPayload(notification))
+	sent := 0
+	for _, subscription := range subscriptions {
+		if !validPWASubscription(subscription) {
+			_, _ = a.db.Exec(`DELETE FROM pwa_push_subscriptions WHERE endpoint=?`, subscription.Endpoint)
+			continue
+		}
+		response, sendErr := webpush.SendNotification(payload, &webpush.Subscription{
+			Endpoint: subscription.Endpoint,
+			Keys:     webpush.Keys{P256dh: subscription.P256DH, Auth: subscription.Auth},
+		}, &webpush.Options{
+			HTTPClient:      a.notificationClient(),
+			Subscriber:      "mailto:" + email,
+			TTL:             3600,
+			Urgency:         webpush.UrgencyHigh,
+			VAPIDPublicKey:  publicKey,
+			VAPIDPrivateKey: privateKey,
+		})
+		if response != nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1024))
+			response.Body.Close()
+			if response.StatusCode == http.StatusGone || response.StatusCode == http.StatusNotFound {
+				_, _ = a.db.Exec(`DELETE FROM pwa_push_subscriptions WHERE endpoint=?`, subscription.Endpoint)
+			}
+		}
+		if sendErr == nil && response != nil && response.StatusCode < 300 {
+			sent++
+		}
+	}
+	if sent == 0 {
+		return 0, errNoChannels
+	}
+	return sent, nil
+}
+
 func (a *application) sendConfigured(notification upcomingNotification) error {
 	var discord, token, chat string
-	var discordEnabled, telegramEnabled bool
-	if err := a.db.QueryRow(`SELECT discord_webhook,discord_enabled,telegram_bot_token,telegram_chat_id,telegram_enabled FROM notification_channels WHERE id=1`).Scan(&discord, &discordEnabled, &token, &chat, &telegramEnabled); err != nil {
+	var discordEnabled, telegramEnabled, pwaEnabled bool
+	if err := a.db.QueryRow(`SELECT discord_webhook,discord_enabled,telegram_bot_token,telegram_chat_id,telegram_enabled,pwa_enabled FROM notification_channels WHERE id=1`).Scan(&discord, &discordEnabled, &token, &chat, &telegramEnabled, &pwaEnabled); err != nil {
 		return err
 	}
 	client := a.notificationClient()
@@ -380,6 +584,13 @@ func (a *application) sendConfigured(notification upcomingNotification) error {
 			}
 		} else {
 			lastErr = errors.New("invalid Telegram notification request")
+		}
+	}
+	if pwaEnabled {
+		if pwaSent, err := a.sendPWANotification(notification); err == nil {
+			sent += pwaSent
+		} else if !errors.Is(err, errNoChannels) {
+			lastErr = errors.New("PWA notification request failed")
 		}
 	}
 	if sent > 0 {

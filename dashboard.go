@@ -62,6 +62,7 @@ type settingsState struct {
 	TelegramBotToken string
 	TelegramChatID   string
 	TelegramEnabled  bool
+	PWAEnabled       bool
 	NotifyUpcoming   bool
 	NotifyChanges    bool
 	NotifyMonthly    bool
@@ -145,6 +146,7 @@ func (a *application) loadState() (appState, error) {
 			c.telegram_bot_token,
 			c.telegram_chat_id,
 			c.telegram_enabled,
+			c.pwa_enabled,
 			n.notify_upcoming,
 			n.notify_changes,
 			n.notify_monthly
@@ -160,6 +162,7 @@ func (a *application) loadState() (appState, error) {
 		&s.Settings.TelegramBotToken,
 		&s.Settings.TelegramChatID,
 		&s.Settings.TelegramEnabled,
+		&s.Settings.PWAEnabled,
 		&s.Settings.NotifyUpcoming,
 		&s.Settings.NotifyChanges,
 		&s.Settings.NotifyMonthly,

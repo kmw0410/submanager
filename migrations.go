@@ -123,6 +123,15 @@ CREATE TABLE IF NOT EXISTS notification_channels (
     telegram_bot_token TEXT NOT NULL DEFAULT '',
     telegram_chat_id TEXT NOT NULL DEFAULT '',
     telegram_enabled INTEGER NOT NULL DEFAULT 1,
+    pwa_enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS pwa_push_subscriptions (
+    id INTEGER PRIMARY KEY,
+    endpoint TEXT NOT NULL UNIQUE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS notification_rules (
@@ -170,6 +179,9 @@ INSERT OR IGNORE INTO notification_rules(id) VALUES(1);
 	if err := a.ensureColumn("notification_channels", "telegram_enabled", "INTEGER NOT NULL DEFAULT 1"); err != nil {
 		return err
 	}
+	if err := a.ensureColumn("notification_channels", "pwa_enabled", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
 	columns := []struct {
 		name       string
 		definition string
@@ -184,6 +196,9 @@ INSERT OR IGNORE INTO notification_rules(id) VALUES(1);
 		}
 	}
 	if err := a.migrateAmountsToMinorUnits(); err != nil {
+		return err
+	}
+	if _, _, err := a.vapidKeys(); err != nil {
 		return err
 	}
 	services := []service{

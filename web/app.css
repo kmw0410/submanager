@@ -1086,6 +1086,14 @@ textarea {
 .pwa-option .help {
   margin: 0;
 }
+.pwa-actions {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+}
+.pwa-actions .button {
+  white-space: nowrap;
+}
 .pm-row {
   display: flex;
   align-items: center;

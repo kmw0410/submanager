@@ -2,12 +2,16 @@ package main
 
 import (
 	"bytes"
+	"crypto/ecdh"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -788,7 +792,7 @@ func TestJSONExportImportRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(exportRecorder.Body.Bytes(), &backup); err != nil {
 		t.Fatal(err)
 	}
-	if backup.Version != 4 || len(backup.Subscriptions) != 1 || backup.Subscriptions[0].Amount != 1599 {
+	if backup.Version != 5 || len(backup.Subscriptions) != 1 || backup.Subscriptions[0].Amount != 1599 {
 		t.Fatalf("unexpected backup amount encoding: version=%d subscriptions=%+v", backup.Version, backup.Subscriptions)
 	}
 	importRecorder := httptest.NewRecorder()
@@ -835,7 +839,7 @@ func TestBackupNotificationCredentialsAreOptional(t *testing.T) {
 	if err := json.Unmarshal(excludedRecorder.Body.Bytes(), &excludedBackup); err != nil {
 		t.Fatal(err)
 	}
-	if excludedBackup.Version != 4 || excludedBackup.NotificationCredentialsIncluded {
+	if excludedBackup.Version != 5 || excludedBackup.NotificationCredentialsIncluded {
 		t.Fatalf("unexpected excluded backup metadata: %+v", excludedBackup)
 	}
 
@@ -1084,7 +1088,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 	if strings.Contains(html, `>×</button>`) || strings.Contains(html, `<span>+</span>`) {
 		t.Fatal("header and modal action icons must use SVG")
 	}
-	if !strings.Contains(html, `href="/assets/app.css?v=20260911-integrations-pwa"`) || !strings.Contains(html, `src="/assets/app.js?v=20260911-integrations-pwa"`) {
+	if !strings.Contains(html, `href="/assets/app.css?v=20260911-pwa-push"`) || !strings.Contains(html, `src="/assets/app.js?v=20260911-pwa-push"`) {
 		t.Fatal("dashboard assets must use the current cache version")
 	}
 	authSource, err := webFS.ReadFile("web/auth.html")
@@ -1092,7 +1096,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := string(authSource)
-	if !strings.Contains(auth, `href="/assets/app.css?v=20260911-integrations-pwa"`) {
+	if !strings.Contains(auth, `href="/assets/app.css?v=20260911-pwa-push"`) {
 		t.Fatal("authentication stylesheet must use the current cache version")
 	}
 	for _, want := range []string{`name="setupToken"`, `minlength="48" maxlength="48"`, `docker compose logs submanager`} {
@@ -1113,8 +1117,11 @@ func TestIntegrationSettingsAndPWAControls(t *testing.T) {
 		`integrationToggle("telegramEnabled", "Telegram", telegramEnabled)`,
 		`data-test="discord"`,
 		`data-test="telegram"`,
-		`<h3>PWA</h3>`,
+		`integrationToggle("pwaEnabled", "PWA", pwaEnabled)`,
 		`id="installPWA"`,
+		`id="enablePWAPush"`,
+		`data-test="pwa"`,
+		`/api/pwa/subscriptions`,
 		`serviceWorker.register("/sw.js")`,
 	} {
 		if !strings.Contains(js, want) {
@@ -1140,8 +1147,65 @@ func TestIntegrationSettingsAndPWAControls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(swSource), "/api/") || strings.Contains(string(swSource), `"/"`) {
+	if strings.Contains(string(swSource), "/api/") {
 		t.Fatal("service worker must not cache authenticated pages or API responses")
+	}
+}
+
+func TestPWAPushSubscriptionValidationAndKeys(t *testing.T) {
+	a := newTestApplication(t)
+	privateKey, publicKey, err := a.vapidKeys()
+	if err != nil || !validVAPIDKeys(privateKey, publicKey) {
+		t.Fatalf("invalid VAPID keys: %v", err)
+	}
+	publicRecorder := httptest.NewRecorder()
+	a.pwaPublicKey(publicRecorder, httptest.NewRequest(http.MethodGet, "/api/pwa/vapid-public", nil))
+	if publicRecorder.Code != http.StatusOK || strings.Contains(publicRecorder.Body.String(), privateKey) || !strings.Contains(publicRecorder.Body.String(), publicKey) {
+		t.Fatalf("VAPID public-key response is invalid: status=%d body=%s", publicRecorder.Code, publicRecorder.Body.String())
+	}
+	validKey := base64.RawURLEncoding.EncodeToString(make([]byte, 65))
+	validAuth := base64.RawURLEncoding.EncodeToString(make([]byte, 16))
+	request, recorder := jsonRequest(t, http.MethodPost, "/api/pwa/subscriptions", map[string]any{
+		"endpoint": "https://push.example.test/subscription",
+		"keys":     map[string]string{"p256dh": validKey, "auth": validAuth},
+	})
+	a.savePWASubscription(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("PWA subscription status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	invalidRequest, invalidRecorder := jsonRequest(t, http.MethodPost, "/api/pwa/subscriptions", map[string]any{"endpoint": "http://unsafe.example.test", "keys": map[string]string{}})
+	a.savePWASubscription(invalidRecorder, invalidRequest)
+	if invalidRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("unsafe PWA subscription status=%d body=%s", invalidRecorder.Code, invalidRecorder.Body.String())
+	}
+}
+
+func TestPWATestNotificationIsDelivered(t *testing.T) {
+	a := newTestApplication(t)
+	if _, err := a.db.Exec(`UPDATE users SET email='admin@example.com' WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	privateKey, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := make([]byte, 16)
+	if _, err = rand.Read(auth); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.db.Exec(`INSERT INTO pwa_push_subscriptions(endpoint,p256dh,auth) VALUES(?,?,?)`, "https://push.example.test/subscription", base64.RawURLEncoding.EncodeToString(privateKey.PublicKey().Bytes()), base64.RawURLEncoding.EncodeToString(auth)); err != nil {
+		t.Fatal(err)
+	}
+	a.notificationHTTPClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Host != "push.example.test" {
+			t.Fatalf("unexpected PWA push destination: %q", request.URL.Host)
+		}
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+	})}
+	request, recorder := jsonRequest(t, http.MethodPost, "/api/notifications/test", map[string]string{"channel": "pwa"})
+	a.testNotification(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("PWA test notification status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

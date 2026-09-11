@@ -13,6 +13,12 @@
     event.preventDefault();
     deferredInstallPrompt = event;
   });
+  const pwaPushSupported = () =>
+    window.isSecureContext && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  const urlBase64ToUint8Array = (value) => {
+    const padded = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+    return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+  };
   const currentMonth = new Date();
   let calendarYear = currentMonth.getFullYear();
   let calendarMonth = currentMonth.getMonth();
@@ -1235,6 +1241,7 @@
   function channelSettingsTemplate() {
     const discordEnabled = state.settings.DiscordEnabled;
     const telegramEnabled = state.settings.TelegramEnabled;
+    const pwaEnabled = state.settings.PWAEnabled;
     return `
       <section class="settings-section" data-section="channels">
         <section class="integration-option">
@@ -1277,14 +1284,19 @@
         </section>
         <section class="integration-option pwa-option">
           <div>
-            <h3>PWA</h3>
-            <p class="help">SubManager를 앱처럼 설치해 빠르게 열 수 있어요. 알림과 데이터는 서버에서 안전하게 처리돼요.</p>
+            ${integrationToggle("pwaEnabled", "PWA", pwaEnabled)}
+            <p class="help">SubManager를 앱처럼 설치해 빠르게 열고, 기기 푸시로 결제 예정 알림을 받을 수 있어요.</p>
           </div>
-          ${pwaInstalled()
-            ? '<p class="help">이 기기에 이미 설치되어 있어요.</p>'
-            : deferredInstallPrompt
-              ? '<button class="button ghost" type="button" id="installPWA">앱으로 설치</button>'
-              : '<p class="help">브라우저 메뉴에서 “홈 화면에 추가”를 선택해 설치할 수 있어요.</p>'}
+          ${pwaEnabled ? `<div class="pwa-actions">
+            ${pwaInstalled()
+              ? '<p class="help">이 기기에 이미 설치되어 있어요.</p>'
+              : deferredInstallPrompt
+                ? '<button class="button ghost" type="button" id="installPWA">앱으로 설치</button>'
+                : '<p class="help">브라우저 메뉴에서 “홈 화면에 추가”를 선택해 설치할 수 있어요.</p>'}
+            ${pwaPushSupported()
+              ? '<button class="button ghost" type="button" id="enablePWAPush">이 기기의 푸시 알림 켜기</button><button class="button ghost" type="button" id="disablePWAPush">이 기기의 푸시 알림 끄기</button><button class="button ghost" type="button" data-test="pwa">PWA 테스트</button>'
+              : '<p class="help">푸시 알림은 HTTPS에서 지원하는 브라우저로 열어 주세요.</p>'}
+          </div>` : ""}
         </section>
       </section>`;
   }
@@ -1310,7 +1322,7 @@
         <label class="check-row backup-secret-option">
           <span>
             <strong>알림 연동 정보 포함</strong>
-            <small>Discord Webhook, Telegram Bot Token과 Chat ID를 백업에 저장해요.</small>
+            <small>Discord·Telegram 정보와 PWA 푸시 구독 정보를 백업에 저장해요.</small>
           </span>
           <span class="switch">
             <input id="includeNotificationCredentials" type="checkbox">
@@ -1543,6 +1555,7 @@
         telegramEnabled: f.has("telegramEnabled"),
         telegramBotToken: f.has("telegramEnabled") ? f.get("telegramBotToken") : state.settings.TelegramBotToken,
         telegramChatId: f.has("telegramEnabled") ? f.get("telegramChatId") : state.settings.TelegramChatID,
+        pwaEnabled: f.has("pwaEnabled"),
         notifyDays: Number(f.get("notifyDays")),
         notifyUpcoming: f.has("notifyUpcoming"),
         notifyChanges: f.has("notifyChanges"),
@@ -1683,13 +1696,14 @@
         }
       })
     );
-    document.querySelectorAll("input[name=discordEnabled], input[name=telegramEnabled]").forEach((input) =>
+    document.querySelectorAll("input[name=discordEnabled], input[name=telegramEnabled], input[name=pwaEnabled]").forEach((input) =>
       input.addEventListener("change", () => {
         const openTab = "channels";
         const form = document.querySelector("#settingsForm");
         const values = new FormData(form);
         if (input.name === "discordEnabled") state.settings.DiscordEnabled = input.checked;
         if (input.name === "telegramEnabled") state.settings.TelegramEnabled = input.checked;
+        if (input.name === "pwaEnabled") state.settings.PWAEnabled = input.checked;
         if (input.name === "discordEnabled" && values.has("discordWebhook")) state.settings.DiscordWebhook = values.get("discordWebhook");
         if (input.name === "telegramEnabled" && values.has("telegramBotToken")) state.settings.TelegramBotToken = values.get("telegramBotToken");
         if (input.name === "telegramEnabled" && values.has("telegramChatId")) state.settings.TelegramChatID = values.get("telegramChatId");
@@ -1704,6 +1718,39 @@
       deferredInstallPrompt = null;
       openSettings();
       document.querySelector('[data-tab="channels"]')?.click();
+    });
+    document.querySelector("#enablePWAPush")?.addEventListener("click", async () => {
+      try {
+        if (!pwaPushSupported()) throw new Error("이 브라우저에서는 PWA 푸시 알림을 지원하지 않아요.");
+        const permission = await Notification.requestPermission();
+        if (permission !== "granted") throw new Error("푸시 알림 권한을 허용해 주세요.");
+        const { publicKey } = await api("/api/pwa/vapid-public");
+        const registration = await navigator.serviceWorker.ready;
+        const subscription = await registration.pushManager.getSubscription() || await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(publicKey),
+        });
+        await api("/api/pwa/subscriptions", { method: "POST", body: subscription.toJSON() });
+        toast("이 기기의 PWA 결제 알림을 켰어요.");
+      } catch (err) {
+        toast(err.message || "PWA 푸시 알림을 켜지 못했어요.", true);
+      }
+    });
+    document.querySelector("#disablePWAPush")?.addEventListener("click", async () => {
+      try {
+        const registration = await navigator.serviceWorker.ready;
+        const subscription = await registration.pushManager.getSubscription();
+        if (!subscription) {
+          toast("이 기기에는 켜진 푸시 알림이 없어요.");
+          return;
+        }
+        const endpoint = subscription.endpoint;
+        await subscription.unsubscribe();
+        await api("/api/pwa/subscriptions", { method: "DELETE", body: { endpoint } });
+        toast("이 기기의 PWA 결제 알림을 껐어요.");
+      } catch (err) {
+        toast(err.message || "PWA 푸시 알림을 끄지 못했어요.", true);
+      }
     });
     document.querySelector("#logoutButton").addEventListener("click", async () => {
       try {

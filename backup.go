@@ -20,12 +20,16 @@ type dataBackup struct {
 		TelegramBotToken string
 		TelegramChatID   string
 		TelegramEnabled  bool
+		PWAEnabled       bool
+		VAPIDPublicKey   string
+		VAPIDPrivateKey  string
 		NotifyDays       int
 		NotifyUpcoming   bool
 		NotifyChanges    bool
 		NotifyMonthly    bool
 	} `json:"settings"`
-	PaymentMethods []struct {
+	PWASubscriptions []pwaPushSubscription `json:"pwaSubscriptions"`
+	PaymentMethods   []struct {
 		ID       int64
 		Name     string
 		Archived bool
@@ -66,7 +70,7 @@ type dataBackup struct {
 
 func (a *application) exportData(w http.ResponseWriter, r *http.Request) {
 	var b dataBackup
-	b.Version = 4
+	b.Version = 5
 	b.ExportedAt = time.Now().In(a.location).Format(time.RFC3339)
 	b.NotificationCredentialsIncluded = r.URL.Query().Get("includeNotificationCredentials") == "true"
 	err := a.db.QueryRow(`SELECT u.name,u.currency,n.days_before,n.notify_upcoming,n.notify_changes,n.notify_monthly FROM users u,notification_rules n WHERE u.id=1 AND n.id=1`).Scan(
@@ -82,14 +86,38 @@ func (a *application) exportData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if b.NotificationCredentialsIncluded {
-		err = a.db.QueryRow(`SELECT discord_webhook,discord_enabled,telegram_bot_token,telegram_chat_id,telegram_enabled FROM notification_channels WHERE id=1`).Scan(
+		err = a.db.QueryRow(`SELECT discord_webhook,discord_enabled,telegram_bot_token,telegram_chat_id,telegram_enabled,pwa_enabled FROM notification_channels WHERE id=1`).Scan(
 			&b.Settings.DiscordWebhook,
 			&b.Settings.DiscordEnabled,
 			&b.Settings.TelegramBotToken,
 			&b.Settings.TelegramChatID,
 			&b.Settings.TelegramEnabled,
+			&b.Settings.PWAEnabled,
 		)
 		if err != nil {
+			a.fail(w, err)
+			return
+		}
+		b.Settings.VAPIDPrivateKey, b.Settings.VAPIDPublicKey, err = a.vapidKeys()
+		if err != nil {
+			a.fail(w, err)
+			return
+		}
+		rows, err := a.db.Query(`SELECT endpoint,p256dh,auth FROM pwa_push_subscriptions ORDER BY id`)
+		if err != nil {
+			a.fail(w, err)
+			return
+		}
+		for rows.Next() {
+			var subscription pwaPushSubscription
+			if err = rows.Scan(&subscription.Endpoint, &subscription.P256DH, &subscription.Auth); err != nil {
+				rows.Close()
+				a.fail(w, err)
+				return
+			}
+			b.PWASubscriptions = append(b.PWASubscriptions, subscription)
+		}
+		if err = rows.Close(); err != nil {
 			a.fail(w, err)
 			return
 		}
@@ -229,7 +257,7 @@ func (a *application) importData(w http.ResponseWriter, r *http.Request) {
 		bad(w, "백업 JSON을 읽을 수 없어요")
 		return
 	}
-	if b.Version != 1 && b.Version != 2 && b.Version != 3 && b.Version != 4 {
+	if b.Version != 1 && b.Version != 2 && b.Version != 3 && b.Version != 4 && b.Version != 5 {
 		bad(w, "지원하지 않는 백업 버전이에요")
 		return
 	}
@@ -253,6 +281,10 @@ func (a *application) importData(w http.ResponseWriter, r *http.Request) {
 		if b.Version < 4 {
 			b.Settings.DiscordEnabled = b.Settings.DiscordWebhook != ""
 			b.Settings.TelegramEnabled = b.Settings.TelegramBotToken != "" && b.Settings.TelegramChatID != ""
+		}
+		if b.Version >= 5 && (!validVAPIDKeys(b.Settings.VAPIDPrivateKey, b.Settings.VAPIDPublicKey) || !validPWASubscriptions(b.PWASubscriptions)) {
+			bad(w, "백업의 PWA 알림 정보가 올바르지 않아요")
+			return
 		}
 	}
 	tx, err := a.db.Begin()
@@ -326,7 +358,22 @@ func (a *application) importData(w http.ResponseWriter, r *http.Request) {
 		b.Settings.Currency,
 	)
 	if err == nil && backupIncludesNotificationCredentials {
-		_, err = tx.Exec(`UPDATE notification_channels SET discord_webhook=?,discord_enabled=?,telegram_bot_token=?,telegram_chat_id=?,telegram_enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, b.Settings.DiscordWebhook, b.Settings.DiscordEnabled, b.Settings.TelegramBotToken, b.Settings.TelegramChatID, b.Settings.TelegramEnabled)
+		_, err = tx.Exec(`UPDATE notification_channels SET discord_webhook=?,discord_enabled=?,telegram_bot_token=?,telegram_chat_id=?,telegram_enabled=?,pwa_enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, b.Settings.DiscordWebhook, b.Settings.DiscordEnabled, b.Settings.TelegramBotToken, b.Settings.TelegramChatID, b.Settings.TelegramEnabled, b.Settings.PWAEnabled)
+	}
+	if err == nil && b.Version >= 5 && backupIncludesNotificationCredentials {
+		if _, err = tx.Exec(`DELETE FROM pwa_push_subscriptions`); err == nil {
+			for _, subscription := range b.PWASubscriptions {
+				if _, err = tx.Exec(`INSERT INTO pwa_push_subscriptions(endpoint,p256dh,auth) VALUES(?,?,?)`, subscription.Endpoint, subscription.P256DH, subscription.Auth); err != nil {
+					break
+				}
+			}
+		}
+		if err == nil {
+			_, err = tx.Exec(`INSERT INTO app_metadata(key,value) VALUES('pwa_vapid_private',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, b.Settings.VAPIDPrivateKey)
+		}
+		if err == nil {
+			_, err = tx.Exec(`INSERT INTO app_metadata(key,value) VALUES('pwa_vapid_public',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, b.Settings.VAPIDPublicKey)
+		}
 	}
 	if err == nil {
 		_, err = tx.Exec(`UPDATE notification_rules SET days_before=?,notify_upcoming=?,notify_changes=?,notify_monthly=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, b.Settings.NotifyDays, b.Settings.NotifyUpcoming, b.Settings.NotifyChanges, b.Settings.NotifyMonthly)

@@ -172,6 +172,9 @@ func main() {
 	mux.HandleFunc("POST /api/currencies", app.requireAuth(app.createCurrency))
 	mux.HandleFunc("DELETE /api/currencies/{id}", app.requireAuth(app.deleteCurrency))
 	mux.HandleFunc("POST /api/notifications/test", app.requireAuth(app.testNotification))
+	mux.HandleFunc("GET /api/pwa/vapid-public", app.requireAuth(app.pwaPublicKey))
+	mux.HandleFunc("POST /api/pwa/subscriptions", app.requireAuth(app.savePWASubscription))
+	mux.HandleFunc("DELETE /api/pwa/subscriptions", app.requireAuth(app.deletePWASubscription))
 	mux.HandleFunc("GET /api/data/export", app.requireAuth(app.exportData))
 	mux.HandleFunc("POST /api/data/import", app.requireAuth(app.importData))
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {

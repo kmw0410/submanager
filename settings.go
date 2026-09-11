@@ -14,7 +14,7 @@ func (a *application) updateSettings(w http.ResponseWriter, r *http.Request) {
 		Name, Currency, DiscordWebhook, TelegramBotToken, TelegramChatID string
 		NotifyDays                                                       int
 		NotifyUpcoming, NotifyChanges, NotifyMonthly                     bool
-		DiscordEnabled, TelegramEnabled                                  bool
+		DiscordEnabled, TelegramEnabled, PWAEnabled                      bool
 	}
 	if !decode(w, r, &v) {
 		return
@@ -57,7 +57,7 @@ func (a *application) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 	if _, err = tx.Exec(`UPDATE users SET name=?,currency=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, v.Name, v.Currency); err == nil {
-		_, err = tx.Exec(`UPDATE notification_channels SET discord_webhook=?,discord_enabled=?,telegram_bot_token=?,telegram_chat_id=?,telegram_enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, strings.TrimSpace(v.DiscordWebhook), v.DiscordEnabled, strings.TrimSpace(v.TelegramBotToken), strings.TrimSpace(v.TelegramChatID), v.TelegramEnabled)
+		_, err = tx.Exec(`UPDATE notification_channels SET discord_webhook=?,discord_enabled=?,telegram_bot_token=?,telegram_chat_id=?,telegram_enabled=?,pwa_enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, strings.TrimSpace(v.DiscordWebhook), v.DiscordEnabled, strings.TrimSpace(v.TelegramBotToken), strings.TrimSpace(v.TelegramChatID), v.TelegramEnabled, v.PWAEnabled)
 	}
 	if err == nil {
 		_, err = tx.Exec(`UPDATE notification_rules SET notify_upcoming=?,notify_changes=?,notify_monthly=?,days_before=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, v.NotifyUpcoming, v.NotifyChanges, v.NotifyMonthly, v.NotifyDays)

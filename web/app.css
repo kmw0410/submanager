@@ -61,6 +61,7 @@ button {
   color: inherit;
 }
 button:focus-visible,
+a:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
@@ -1600,6 +1601,14 @@ textarea {
 }
 .theme-button {
   transition: background-color .16s,border-color .16s,color .16s;
+}
+.github-link {
+  color: inherit;
+  text-decoration: none;
+}
+.github-link svg {
+  fill: currentColor;
+  stroke: none;
 }
 #addSubscriptionButton {
   height: 39px;

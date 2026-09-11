@@ -1069,13 +1069,22 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 			t.Fatalf("theme controls must contain %q", want)
 		}
 	}
+	for _, want := range []string{`class="icon-button github-link"`, `href="https://github.com/kmw0410/submanager"`, `title="GitHub 저장소"`} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("GitHub repository link is missing %q", want)
+		}
+	}
+	if strings.Index(html, `id="settingsButton"`) > strings.Index(html, `class="icon-button github-link"`) ||
+		strings.Index(html, `class="icon-button github-link"`) > strings.Index(html, `id="addSubscriptionButton"`) {
+		t.Fatal("GitHub repository link must appear between settings and add-subscription actions")
+	}
 	if !strings.Contains(css, `:root[data-theme=light]`) || !strings.Contains(js, `themeMedia.addEventListener("change"`) {
 		t.Fatal("light and system theme behavior must be defined")
 	}
 	if strings.Contains(html, `>×</button>`) || strings.Contains(html, `<span>+</span>`) {
 		t.Fatal("header and modal action icons must use SVG")
 	}
-	if !strings.Contains(html, `href="/assets/app.css?v=20260911-sidebar-navigation"`) || !strings.Contains(html, `src="/assets/app.js?v=20260911-sidebar-navigation"`) {
+	if !strings.Contains(html, `href="/assets/app.css?v=20260911-github-link"`) || !strings.Contains(html, `src="/assets/app.js?v=20260911-github-link"`) {
 		t.Fatal("dashboard assets must use the current cache version")
 	}
 	authSource, err := webFS.ReadFile("web/auth.html")
@@ -1083,7 +1092,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := string(authSource)
-	if !strings.Contains(auth, `href="/assets/app.css?v=20260911-sidebar-navigation"`) {
+	if !strings.Contains(auth, `href="/assets/app.css?v=20260911-github-link"`) {
 		t.Fatal("authentication stylesheet must use the current cache version")
 	}
 	for _, want := range []string{`name="setupToken"`, `minlength="48" maxlength="48"`, `docker compose logs submanager`} {

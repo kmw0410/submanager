@@ -16,8 +16,10 @@ type dataBackup struct {
 		Currency         string
 		Timezone         string `json:"timezone,omitempty"`
 		DiscordWebhook   string
+		DiscordEnabled   bool
 		TelegramBotToken string
 		TelegramChatID   string
+		TelegramEnabled  bool
 		NotifyDays       int
 		NotifyUpcoming   bool
 		NotifyChanges    bool
@@ -64,7 +66,7 @@ type dataBackup struct {
 
 func (a *application) exportData(w http.ResponseWriter, r *http.Request) {
 	var b dataBackup
-	b.Version = 3
+	b.Version = 4
 	b.ExportedAt = time.Now().In(a.location).Format(time.RFC3339)
 	b.NotificationCredentialsIncluded = r.URL.Query().Get("includeNotificationCredentials") == "true"
 	err := a.db.QueryRow(`SELECT u.name,u.currency,n.days_before,n.notify_upcoming,n.notify_changes,n.notify_monthly FROM users u,notification_rules n WHERE u.id=1 AND n.id=1`).Scan(
@@ -80,10 +82,12 @@ func (a *application) exportData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if b.NotificationCredentialsIncluded {
-		err = a.db.QueryRow(`SELECT discord_webhook,telegram_bot_token,telegram_chat_id FROM notification_channels WHERE id=1`).Scan(
+		err = a.db.QueryRow(`SELECT discord_webhook,discord_enabled,telegram_bot_token,telegram_chat_id,telegram_enabled FROM notification_channels WHERE id=1`).Scan(
 			&b.Settings.DiscordWebhook,
+			&b.Settings.DiscordEnabled,
 			&b.Settings.TelegramBotToken,
 			&b.Settings.TelegramChatID,
+			&b.Settings.TelegramEnabled,
 		)
 		if err != nil {
 			a.fail(w, err)
@@ -225,7 +229,7 @@ func (a *application) importData(w http.ResponseWriter, r *http.Request) {
 		bad(w, "백업 JSON을 읽을 수 없어요")
 		return
 	}
-	if b.Version != 1 && b.Version != 2 && b.Version != 3 {
+	if b.Version != 1 && b.Version != 2 && b.Version != 3 && b.Version != 4 {
 		bad(w, "지원하지 않는 백업 버전이에요")
 		return
 	}
@@ -245,6 +249,10 @@ func (a *application) importData(w http.ResponseWriter, r *http.Request) {
 		if err := validateTelegramCredentials(b.Settings.TelegramBotToken, b.Settings.TelegramChatID); err != nil {
 			bad(w, "백업의 Telegram 연동 정보가 올바르지 않아요")
 			return
+		}
+		if b.Version < 4 {
+			b.Settings.DiscordEnabled = b.Settings.DiscordWebhook != ""
+			b.Settings.TelegramEnabled = b.Settings.TelegramBotToken != "" && b.Settings.TelegramChatID != ""
 		}
 	}
 	tx, err := a.db.Begin()
@@ -318,7 +326,7 @@ func (a *application) importData(w http.ResponseWriter, r *http.Request) {
 		b.Settings.Currency,
 	)
 	if err == nil && backupIncludesNotificationCredentials {
-		_, err = tx.Exec(`UPDATE notification_channels SET discord_webhook=?,telegram_bot_token=?,telegram_chat_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, b.Settings.DiscordWebhook, b.Settings.TelegramBotToken, b.Settings.TelegramChatID)
+		_, err = tx.Exec(`UPDATE notification_channels SET discord_webhook=?,discord_enabled=?,telegram_bot_token=?,telegram_chat_id=?,telegram_enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, b.Settings.DiscordWebhook, b.Settings.DiscordEnabled, b.Settings.TelegramBotToken, b.Settings.TelegramChatID, b.Settings.TelegramEnabled)
 	}
 	if err == nil {
 		_, err = tx.Exec(`UPDATE notification_rules SET days_before=?,notify_upcoming=?,notify_changes=?,notify_monthly=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, b.Settings.NotifyDays, b.Settings.NotifyUpcoming, b.Settings.NotifyChanges, b.Settings.NotifyMonthly)

@@ -119,8 +119,10 @@ CREATE INDEX IF NOT EXISTS idx_activity_events_date
 CREATE TABLE IF NOT EXISTS notification_channels (
     id INTEGER PRIMARY KEY CHECK(id=1),
     discord_webhook TEXT NOT NULL DEFAULT '',
+    discord_enabled INTEGER NOT NULL DEFAULT 1,
     telegram_bot_token TEXT NOT NULL DEFAULT '',
     telegram_chat_id TEXT NOT NULL DEFAULT '',
+    telegram_enabled INTEGER NOT NULL DEFAULT 1,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS notification_rules (
@@ -160,6 +162,12 @@ INSERT OR IGNORE INTO notification_rules(id) VALUES(1);
 		return err
 	}
 	if err := a.ensureColumn("sessions", "user_agent", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := a.ensureColumn("notification_channels", "discord_enabled", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if err := a.ensureColumn("notification_channels", "telegram_enabled", "INTEGER NOT NULL DEFAULT 1"); err != nil {
 		return err
 	}
 	columns := []struct {

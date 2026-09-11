@@ -58,8 +58,10 @@ type userState struct {
 type settingsState struct {
 	NotifyDays       int
 	DiscordWebhook   string
+	DiscordEnabled   bool
 	TelegramBotToken string
 	TelegramChatID   string
+	TelegramEnabled  bool
 	NotifyUpcoming   bool
 	NotifyChanges    bool
 	NotifyMonthly    bool
@@ -139,8 +141,10 @@ func (a *application) loadState() (appState, error) {
 			u.currency,
 			n.days_before,
 			c.discord_webhook,
+			c.discord_enabled,
 			c.telegram_bot_token,
 			c.telegram_chat_id,
+			c.telegram_enabled,
 			n.notify_upcoming,
 			n.notify_changes,
 			n.notify_monthly
@@ -152,8 +156,10 @@ func (a *application) loadState() (appState, error) {
 		&s.User.Currency,
 		&s.Settings.NotifyDays,
 		&s.Settings.DiscordWebhook,
+		&s.Settings.DiscordEnabled,
 		&s.Settings.TelegramBotToken,
 		&s.Settings.TelegramChatID,
+		&s.Settings.TelegramEnabled,
 		&s.Settings.NotifyUpcoming,
 		&s.Settings.NotifyChanges,
 		&s.Settings.NotifyMonthly,

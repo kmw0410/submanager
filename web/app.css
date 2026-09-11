@@ -1059,6 +1059,33 @@ textarea {
 .settings-section h3:first-child {
   margin-top: 0;
 }
+.integration-option {
+  padding: 4px 0 18px;
+  border-bottom: 1px solid var(--line);
+}
+.integration-option + .integration-option {
+  padding-top: 18px;
+}
+.integration-option:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.integration-toggle {
+  padding-top: 0;
+  color: var(--text);
+}
+.pwa-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+.pwa-option h3 {
+  margin: 0 0 4px;
+}
+.pwa-option .help {
+  margin: 0;
+}
 .pm-row {
   display: flex;
   align-items: center;

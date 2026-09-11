@@ -315,12 +315,16 @@ func discordWebhookPayload(message string) map[string]any {
 
 func (a *application) sendConfigured(notification upcomingNotification) error {
 	var discord, token, chat string
-	if err := a.db.QueryRow(`SELECT discord_webhook,telegram_bot_token,telegram_chat_id FROM notification_channels WHERE id=1`).Scan(&discord, &token, &chat); err != nil {
+	var discordEnabled, telegramEnabled bool
+	if err := a.db.QueryRow(`SELECT discord_webhook,discord_enabled,telegram_bot_token,telegram_chat_id,telegram_enabled FROM notification_channels WHERE id=1`).Scan(&discord, &discordEnabled, &token, &chat, &telegramEnabled); err != nil {
 		return err
 	}
 	client := a.notificationClient()
 	sent := 0
 	var lastErr error
+	if !discordEnabled {
+		discord = ""
+	}
 	if discord != "" {
 		validatedDiscord, err := validateDiscordWebhook(discord)
 		if err != nil {
@@ -348,6 +352,9 @@ func (a *application) sendConfigured(notification upcomingNotification) error {
 		} else {
 			lastErr = errors.New("invalid Discord notification request")
 		}
+	}
+	if !telegramEnabled {
+		token, chat = "", ""
 	}
 	if token != "" && chat != "" {
 		if err := validateTelegramCredentials(token, chat); err != nil {

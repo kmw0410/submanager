@@ -788,7 +788,7 @@ func TestJSONExportImportRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(exportRecorder.Body.Bytes(), &backup); err != nil {
 		t.Fatal(err)
 	}
-	if backup.Version != 3 || len(backup.Subscriptions) != 1 || backup.Subscriptions[0].Amount != 1599 {
+	if backup.Version != 4 || len(backup.Subscriptions) != 1 || backup.Subscriptions[0].Amount != 1599 {
 		t.Fatalf("unexpected backup amount encoding: version=%d subscriptions=%+v", backup.Version, backup.Subscriptions)
 	}
 	importRecorder := httptest.NewRecorder()
@@ -835,7 +835,7 @@ func TestBackupNotificationCredentialsAreOptional(t *testing.T) {
 	if err := json.Unmarshal(excludedRecorder.Body.Bytes(), &excludedBackup); err != nil {
 		t.Fatal(err)
 	}
-	if excludedBackup.Version != 3 || excludedBackup.NotificationCredentialsIncluded {
+	if excludedBackup.Version != 4 || excludedBackup.NotificationCredentialsIncluded {
 		t.Fatalf("unexpected excluded backup metadata: %+v", excludedBackup)
 	}
 
@@ -1084,7 +1084,7 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 	if strings.Contains(html, `>×</button>`) || strings.Contains(html, `<span>+</span>`) {
 		t.Fatal("header and modal action icons must use SVG")
 	}
-	if !strings.Contains(html, `href="/assets/app.css?v=20260911-github-link"`) || !strings.Contains(html, `src="/assets/app.js?v=20260911-github-link"`) {
+	if !strings.Contains(html, `href="/assets/app.css?v=20260911-integrations-pwa"`) || !strings.Contains(html, `src="/assets/app.js?v=20260911-integrations-pwa"`) {
 		t.Fatal("dashboard assets must use the current cache version")
 	}
 	authSource, err := webFS.ReadFile("web/auth.html")
@@ -1092,13 +1092,56 @@ func TestDashboardNavigationAndPresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := string(authSource)
-	if !strings.Contains(auth, `href="/assets/app.css?v=20260911-github-link"`) {
+	if !strings.Contains(auth, `href="/assets/app.css?v=20260911-integrations-pwa"`) {
 		t.Fatal("authentication stylesheet must use the current cache version")
 	}
 	for _, want := range []string{`name="setupToken"`, `minlength="48" maxlength="48"`, `docker compose logs submanager`} {
 		if !strings.Contains(auth, want) {
 			t.Fatalf("setup token instructions are missing %q", want)
 		}
+	}
+}
+
+func TestIntegrationSettingsAndPWAControls(t *testing.T) {
+	jsSource, err := webFS.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(jsSource)
+	for _, want := range []string{
+		`integrationToggle("discordEnabled", "Discord", discordEnabled)`,
+		`integrationToggle("telegramEnabled", "Telegram", telegramEnabled)`,
+		`data-test="discord"`,
+		`data-test="telegram"`,
+		`<h3>PWA</h3>`,
+		`id="installPWA"`,
+		`serviceWorker.register("/sw.js")`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("integration settings source is missing %q", want)
+		}
+	}
+	if strings.Contains(js, `Discord Webhook</span>`) || strings.Contains(js, `Telegram Bot Token</span>`) {
+		t.Fatal("integration labels must use the channel names")
+	}
+	for _, path := range []string{"web/manifest.webmanifest", "web/sw.js", "web/icon.svg"} {
+		if _, err := webFS.ReadFile(path); err != nil {
+			t.Fatalf("PWA asset %q is missing: %v", path, err)
+		}
+	}
+	manifestSource, err := webFS.ReadFile("web/manifest.webmanifest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(manifestSource), `"display": "standalone"`) {
+		t.Fatal("PWA manifest must use standalone display mode")
+	}
+	swSource, err := webFS.ReadFile("web/sw.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(swSource), "/api/") || strings.Contains(string(swSource), `"/"`) {
+		t.Fatal("service worker must not cache authenticated pages or API responses")
 	}
 }
 
@@ -1359,6 +1402,17 @@ func TestNotificationDestinationsAreRestricted(t *testing.T) {
 	}
 	if err := validateTelegramCredentials("not-a-token", "1234"); err == nil {
 		t.Fatal("invalid Telegram token was accepted")
+	}
+}
+
+func TestDisabledNotificationChannelsAreNotDelivered(t *testing.T) {
+	a := newTestApplication(t)
+	const webhook = "https://discord.com/api/webhooks/123456789012345678/secret_webhook_token"
+	if _, err := a.db.Exec(`UPDATE notification_channels SET discord_webhook=?,discord_enabled=0,telegram_enabled=0 WHERE id=1`, webhook); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.sendConfigured(upcomingNotification{Days: 3, Items: []string{"테스트 (₩1,000)"}}); !errors.Is(err, errNoChannels) {
+		t.Fatalf("disabled notification channels must not send, got %v", err)
 	}
 }
 

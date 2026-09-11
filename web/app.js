@@ -6,6 +6,13 @@
   let subscriptionQuery = "";
   let subscriptionCategory = "";
   let upcomingView = "list";
+  let deferredInstallPrompt = null;
+  const pwaInstalled = () =>
+    matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    deferredInstallPrompt = event;
+  });
   const currentMonth = new Date();
   let calendarYear = currentMonth.getFullYear();
   let calendarMonth = currentMonth.getMonth();
@@ -1226,39 +1233,70 @@
   }
 
   function channelSettingsTemplate() {
+    const discordEnabled = state.settings.DiscordEnabled;
+    const telegramEnabled = state.settings.TelegramEnabled;
     return `
       <section class="settings-section" data-section="channels">
-        <label class="field">
-          <span>Discord Webhook</span>
-          <input
-            name="discordWebhook"
-            type="url"
-            value="${esc(state.settings.DiscordWebhook)}"
-            placeholder="https://discord.com/api/webhooks/..."
-          >
-        </label>
-        <div class="form-actions">
-          <button class="button ghost" type="button" data-test="discord">Discord 테스트</button>
-        </div>
-        <div class="field-grid">
-          <label class="field wide">
-            <span>Telegram Bot Token</span>
-            <input
-              name="telegramBotToken"
-              type="password"
-              value="${esc(state.settings.TelegramBotToken)}"
-              autocomplete="off"
-            >
-          </label>
-          <label class="field wide">
-            <span>Telegram Chat ID</span>
-            <input name="telegramChatId" value="${esc(state.settings.TelegramChatID)}">
-          </label>
-        </div>
-        <div class="form-actions">
-          <button class="button ghost" type="button" data-test="telegram">Telegram 테스트</button>
-        </div>
+        <section class="integration-option">
+          ${integrationToggle("discordEnabled", "Discord", discordEnabled)}
+          ${discordEnabled ? `
+            <label class="field">
+              <span>Webhook URL</span>
+              <input
+                name="discordWebhook"
+                type="url"
+                value="${esc(state.settings.DiscordWebhook)}"
+                placeholder="https://discord.com/api/webhooks/..."
+              >
+            </label>
+            <div class="form-actions">
+              <button class="button ghost" type="button" data-test="discord">Discord 테스트</button>
+            </div>` : ""}
+        </section>
+        <section class="integration-option">
+          ${integrationToggle("telegramEnabled", "Telegram", telegramEnabled)}
+          ${telegramEnabled ? `
+            <div class="field-grid">
+              <label class="field wide">
+                <span>Bot Token</span>
+                <input
+                  name="telegramBotToken"
+                  type="password"
+                  value="${esc(state.settings.TelegramBotToken)}"
+                  autocomplete="off"
+                >
+              </label>
+              <label class="field wide">
+                <span>Chat ID</span>
+                <input name="telegramChatId" value="${esc(state.settings.TelegramChatID)}">
+              </label>
+            </div>
+            <div class="form-actions">
+              <button class="button ghost" type="button" data-test="telegram">Telegram 테스트</button>
+            </div>` : ""}
+        </section>
+        <section class="integration-option pwa-option">
+          <div>
+            <h3>PWA</h3>
+            <p class="help">SubManager를 앱처럼 설치해 빠르게 열 수 있어요. 알림과 데이터는 서버에서 안전하게 처리돼요.</p>
+          </div>
+          ${pwaInstalled()
+            ? '<p class="help">이 기기에 이미 설치되어 있어요.</p>'
+            : deferredInstallPrompt
+              ? '<button class="button ghost" type="button" id="installPWA">앱으로 설치</button>'
+              : '<p class="help">브라우저 메뉴에서 “홈 화면에 추가”를 선택해 설치할 수 있어요.</p>'}
+        </section>
       </section>`;
+  }
+
+  function integrationToggle(name, label, checked) {
+    return `<label class="check-row integration-toggle">
+      <strong>${label}</strong>
+      <span class="switch">
+        <input name="${name}" type="checkbox" ${checked ? "checked" : ""}>
+        <span></span>
+      </span>
+    </label>`;
   }
 
   function dataSettingsTemplate() {
@@ -1500,9 +1538,11 @@
       const body = {
         name: f.get("name"),
         currency: f.get("currency"),
-        discordWebhook: f.get("discordWebhook"),
-        telegramBotToken: f.get("telegramBotToken"),
-        telegramChatId: f.get("telegramChatId"),
+        discordEnabled: f.has("discordEnabled"),
+        discordWebhook: f.has("discordEnabled") ? f.get("discordWebhook") : state.settings.DiscordWebhook,
+        telegramEnabled: f.has("telegramEnabled"),
+        telegramBotToken: f.has("telegramEnabled") ? f.get("telegramBotToken") : state.settings.TelegramBotToken,
+        telegramChatId: f.has("telegramEnabled") ? f.get("telegramChatId") : state.settings.TelegramChatID,
         notifyDays: Number(f.get("notifyDays")),
         notifyUpcoming: f.has("notifyUpcoming"),
         notifyChanges: f.has("notifyChanges"),
@@ -1643,6 +1683,28 @@
         }
       })
     );
+    document.querySelectorAll("input[name=discordEnabled], input[name=telegramEnabled]").forEach((input) =>
+      input.addEventListener("change", () => {
+        const openTab = "channels";
+        const form = document.querySelector("#settingsForm");
+        const values = new FormData(form);
+        if (input.name === "discordEnabled") state.settings.DiscordEnabled = input.checked;
+        if (input.name === "telegramEnabled") state.settings.TelegramEnabled = input.checked;
+        if (input.name === "discordEnabled" && values.has("discordWebhook")) state.settings.DiscordWebhook = values.get("discordWebhook");
+        if (input.name === "telegramEnabled" && values.has("telegramBotToken")) state.settings.TelegramBotToken = values.get("telegramBotToken");
+        if (input.name === "telegramEnabled" && values.has("telegramChatId")) state.settings.TelegramChatID = values.get("telegramChatId");
+        openSettings();
+        document.querySelector(`[data-tab="${openTab}"]`)?.click();
+      })
+    );
+    document.querySelector("#installPWA")?.addEventListener("click", async () => {
+      if (!deferredInstallPrompt) return;
+      deferredInstallPrompt.prompt();
+      await deferredInstallPrompt.userChoice;
+      deferredInstallPrompt = null;
+      openSettings();
+      document.querySelector('[data-tab="channels"]')?.click();
+    });
     document.querySelector("#logoutButton").addEventListener("click", async () => {
       try {
         await api("/auth/logout", { method: "POST", body: {} });
@@ -1841,6 +1903,9 @@
     if (document.documentElement.dataset.themePreference === "system") applyTheme("system");
   });
   document.querySelector("#settingsButton").addEventListener("click", openSettings);
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+  }
   applyTheme(document.documentElement.dataset.themePreference || "system");
   render();
 })();

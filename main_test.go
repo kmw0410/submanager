@@ -1451,6 +1451,15 @@ func TestUpcomingNotificationItemsIncludePrices(t *testing.T) {
 	if !ok || len(embeds) != 1 || embeds[0]["title"] != "🔔 결제 예정" {
 		t.Fatalf("Discord upcoming notification must be an embed: %#v", payload)
 	}
+	pwaPayload := pwaPushPayload(notification)
+	if pwaPayload["title"] != "🔔 결제 예정" || strings.Contains(pwaPayload["body"], "결제 예정") {
+		t.Fatalf("PWA notification must keep its heading only in the title: %#v", pwaPayload)
+	}
+	for _, want := range items {
+		if !strings.Contains(pwaPayload["body"], "- "+want) {
+			t.Fatalf("PWA notification body is missing %q: %s", want, pwaPayload["body"])
+		}
+	}
 }
 
 func TestNotificationDestinationsAreRestricted(t *testing.T) {

@@ -455,10 +455,24 @@ func discordWebhookPayload(message string) map[string]any {
 func pwaPushPayload(notification upcomingNotification) map[string]string {
 	return map[string]string{
 		"title": "🔔 결제 예정",
-		"body":  notification.plainText(),
-		"tag":   "submanager-upcoming",
-		"url":   "/",
+		// The notification title already states that this is an upcoming payment.
+		// Keep the body to the actionable details so mobile notifications do not
+		// repeat the same heading twice.
+		"body": notificationBody(notification),
+		"tag":  "submanager-upcoming",
+		"url":  "/",
 	}
+}
+
+func notificationBody(notification upcomingNotification) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d일 뒤 결제할 %d개 항목이에요:\n", notification.Days, len(notification.Items))
+	for _, item := range notification.Items {
+		b.WriteString("- ")
+		b.WriteString(item)
+		b.WriteByte('\n')
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func (a *application) sendPWANotification(notification upcomingNotification) (int, error) {

@@ -197,7 +197,10 @@ func telegramPayload(chat string, notification upcomingNotification) map[string]
 
 func (a *application) testNotification(w http.ResponseWriter, r *http.Request) {
 	var v struct {
-		Channel, DiscordWebhook, TelegramBotToken, TelegramChatID string
+		Channel          string `json:"channel"`
+		DiscordWebhook   string `json:"discordWebhook"`
+		TelegramBotToken string `json:"telegramBotToken"`
+		TelegramChatID   string `json:"telegramChatId"`
 	}
 	if !decode(w, r, &v) {
 		return

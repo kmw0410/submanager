@@ -1682,12 +1682,12 @@
     document.querySelectorAll("[data-test]").forEach((b) =>
       b.addEventListener("click", async () => {
         const f = new FormData(document.querySelector("#settingsForm"));
-        const body = {
-          channel: b.dataset.test,
-          discordWebhook: f.get("discordWebhook"),
-          telegramBotToken: f.get("telegramBotToken"),
-          telegramChatId: f.get("telegramChatId"),
-        };
+        const body = { channel: b.dataset.test };
+        if (b.dataset.test === "discord") body.discordWebhook = f.get("discordWebhook") || "";
+        if (b.dataset.test === "telegram") {
+          body.telegramBotToken = f.get("telegramBotToken") || "";
+          body.telegramChatId = f.get("telegramChatId") || "";
+        }
         try {
           await api("/api/notifications/test", { method: "POST", body });
           toast("SubManager 알림 테스트를 보냈어요.");

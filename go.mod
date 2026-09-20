@@ -2,7 +2,7 @@ module submanager
 
 go 1.24
 
-require github.com/mattn/go-sqlite3 v1.14.24
+require github.com/mattn/go-sqlite3 v1.14.52
 
 require (
 	github.com/SherClockHolmes/webpush-go v1.4.0

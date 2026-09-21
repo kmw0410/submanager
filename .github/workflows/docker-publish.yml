@@ -24,7 +24,7 @@ jobs:
   docker:
     if: >
       github.event_name == 'workflow_dispatch' ||
-      (contains(github.event.head_commit.message, '[skip actions]') == false &&
+      (contains(github.event.head_commit.message, '[skip ci]') == false &&
       github.actor != 'dependabot[bot]' &&
       github.event.head_commit.author.username != 'dependabot[bot]')
     runs-on: self-hosted

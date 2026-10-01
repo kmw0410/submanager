@@ -128,6 +128,11 @@ func (a *application) getState(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (a *application) loadState() (appState, error) {
+	return a.loadStateAt(time.Now().In(a.location))
+}
+
+func (a *application) loadStateAt(now time.Time) (appState, error) {
+	now = now.In(a.location)
 	var s appState
 	s.Services = []service{}
 	s.PaymentMethods = []paymentMethod{}
@@ -202,6 +207,9 @@ func (a *application) loadState() (appState, error) {
 		}
 		s.Services = append(s.Services, v)
 	}
+	if err := rows.Err(); err != nil {
+		return s, err
+	}
 	pm, err := a.db.Query(`SELECT id,name,is_builtin,archived FROM payment_methods ORDER BY is_builtin DESC,id`)
 	if err != nil {
 		return s, err
@@ -213,6 +221,9 @@ func (a *application) loadState() (appState, error) {
 			return s, err
 		}
 		s.PaymentMethods = append(s.PaymentMethods, v)
+	}
+	if err := pm.Err(); err != nil {
+		return s, err
 	}
 	currencyRows, err := a.db.Query(`SELECT id,code,name,is_builtin,archived FROM currencies ORDER BY is_builtin DESC,id`)
 	if err != nil {
@@ -227,6 +238,10 @@ func (a *application) loadState() (appState, error) {
 		v.Digits = currencyFractionDigits(v.Code)
 		s.Currencies = append(s.Currencies, v)
 	}
+	if err := currencyRows.Err(); err != nil {
+		currencyRows.Close()
+		return s, err
+	}
 	if err := currencyRows.Close(); err != nil {
 		return s, err
 	}
@@ -237,7 +252,6 @@ func (a *application) loadState() (appState, error) {
 	if s.Subscriptions == nil {
 		s.Subscriptions = []subscription{}
 	}
-	now := time.Now().In(a.location)
 	currencyStats := map[string]*currencyStat{}
 	currencyOrder := []string{}
 	addCurrency := func(currency string) {
@@ -247,7 +261,7 @@ func (a *application) loadState() (appState, error) {
 			currencyOrder = append(currencyOrder, currency)
 		}
 	}
-	activeSubscriptionIDs := make(map[int64]struct{})
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, a.location)
 	for i := range s.Subscriptions {
 		v := &s.Subscriptions[i]
 		if v.TrialEndsAt != "" {
@@ -258,13 +272,8 @@ func (a *application) loadState() (appState, error) {
 		v.NextPayment = nextPayment(now, v.BillingDay, v.BillingCycle, v.BillingDate)
 		if v.Status == "active" {
 			s.Stats.ActiveCount++
-			activeSubscriptionIDs[v.ID] = struct{}{}
 			currency := strings.ToUpper(v.Currency)
 			addCurrency(currency)
-			due, _ := time.ParseInLocation("2006-01-02", v.NextPayment, a.location)
-			if due.Sub(now) <= 7*24*time.Hour {
-				s.Stats.UpcomingCount++
-			}
 			if v.BillingCycle == "yearly" {
 				currencyStats[currency].YearEstimate += v.Amount
 			} else {
@@ -276,13 +285,13 @@ func (a *application) loadState() (appState, error) {
 	if err != nil {
 		return s, err
 	}
-	for subscriptionID, points := range priceHistory {
-		if _, active := activeSubscriptionIDs[subscriptionID]; !active {
-			continue
-		}
+	for _, points := range priceHistory {
 		for _, point := range points {
 			addCurrency(point.Currency)
 		}
+	}
+	for _, sub := range s.Subscriptions {
+		addCurrency(sub.Currency)
 	}
 	sort.SliceStable(currencyOrder, func(i, j int) bool {
 		if currencyOrder[i] == currencyOrder[j] {
@@ -296,11 +305,28 @@ func (a *application) loadState() (appState, error) {
 		}
 		return currencyOrder[i] < currencyOrder[j]
 	})
+	projection, err := a.loadPaymentProjection(monthStart.AddDate(0, -5, 0).Format("2006-01"), monthStart.AddDate(0, 1, 0).Format("2006-01"), s.Subscriptions, priceHistory)
+	if err != nil {
+		return s, err
+	}
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, a.location)
+	for _, sub := range s.Subscriptions {
+		if sub.Status != "active" {
+			continue
+		}
+		due, err := storedDate(sub.NextPayment, a.location)
+		if err != nil || due.Before(today) || due.After(today.AddDate(0, 0, 7)) {
+			continue
+		}
+		if !projection.Overrides[occurrenceKey{sub.ID, due.Format("2006-01")}].Skipped {
+			s.Stats.UpcomingCount++
+		}
+	}
 	for i := -5; i <= 0; i++ {
-		d := now.AddDate(0, i, 0)
+		d := monthStart.AddDate(0, i, 0)
 		p := d.Format("2006-01")
 		s.Stats.Months = append(s.Stats.Months, d.Format("1월"))
-		month, err := a.loadPaymentOccurrencesWithPriceHistory(p, priceHistory)
+		month, err := projection.month(p, a.location)
 		if err != nil {
 			return s, err
 		}
@@ -466,30 +492,73 @@ func (a *application) loadSubscriptionPriceHistory() (map[int64][]subscriptionPr
 	return history, nil
 }
 
+type occurrenceKey struct {
+	SubscriptionID int64
+	Period         string
+}
+
+type occurrenceOverride struct {
+	Amount   int64
+	Currency string
+	Skipped  bool
+}
+
+type paymentProjection struct {
+	Subscriptions []subscription
+	History       map[int64][]subscriptionPricePoint
+	Overrides     map[occurrenceKey]occurrenceOverride
+}
+
+// Load occurrence overrides once for a requested range. Dashboard and ICS reuse
+// the same subscription and price inputs across all months in that range.
+func (a *application) loadPaymentProjection(first, last string, subs []subscription, history map[int64][]subscriptionPricePoint) (paymentProjection, error) {
+	projection := paymentProjection{Subscriptions: subs, History: history, Overrides: make(map[occurrenceKey]occurrenceOverride)}
+	rows, err := a.db.Query(`SELECT subscription_id,period,amount,currency,skipped FROM subscription_occurrences WHERE period>=? AND period<=?`, first, last)
+	if err != nil {
+		return projection, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key occurrenceKey
+		var override occurrenceOverride
+		if err := rows.Scan(&key.SubscriptionID, &key.Period, &override.Amount, &override.Currency, &override.Skipped); err != nil {
+			return projection, err
+		}
+		projection.Overrides[key] = override
+	}
+	return projection, rows.Err()
+}
+
 func (a *application) loadPaymentOccurrencesWithPriceHistory(period string, history map[int64][]subscriptionPricePoint) (upcomingMonth, error) {
+	subs, err := a.loadSubscriptions()
+	if err != nil {
+		return upcomingMonth{}, err
+	}
+	projection, err := a.loadPaymentProjection(period, period, subs, history)
+	if err != nil {
+		return upcomingMonth{}, err
+	}
+	return projection.month(period, a.location)
+}
+
+func (projection paymentProjection) month(period string, loc *time.Location) (upcomingMonth, error) {
 	y, m, err := parsePeriod(period)
 	if err != nil {
 		return upcomingMonth{}, err
 	}
-	last := time.Date(y, m+1, 0, 0, 0, 0, 0, a.location).Day()
-	rows, err := a.db.Query(`SELECT s.id,s.service_name,s.color,s.amount,s.currency,s.billing_cycle,s.billing_day,COALESCE(NULLIF(s.billing_anchor,''),s.started_at),COALESCE(s.cancelled_at,''),COALESCE(s.trial_ends_at,''),p.name,COALESCE(o.skipped,0),o.amount,o.currency FROM subscriptions s JOIN payment_methods p ON p.id=s.payment_method_id LEFT JOIN subscription_occurrences o ON o.subscription_id=s.id AND o.period=?`, period)
-	if err != nil {
-		return upcomingMonth{}, err
-	}
-	defer rows.Close()
+	last := time.Date(y, m+1, 0, 0, 0, 0, 0, loc).Day()
 	month := upcomingMonth{Period: period, Items: []paymentOccurrence{}, Totals: map[string]int64{}}
-	for rows.Next() {
-		var id, day int
-		var amount int64
-		var serviceName, color, currency, cycle, anchor, cancelled, trialEndsAt, paymentMethodName string
-		var skipped bool
-		var occurrenceAmount sql.NullInt64
-		var occurrenceCurrency sql.NullString
-		if err := rows.Scan(&id, &serviceName, &color, &amount, &currency, &cycle, &day, &anchor, &cancelled, &trialEndsAt, &paymentMethodName, &skipped, &occurrenceAmount, &occurrenceCurrency); err != nil {
-			return upcomingMonth{}, err
+	for _, sub := range projection.Subscriptions {
+		id, day, amount := sub.ID, sub.BillingDay, sub.Amount
+		serviceName, color, currency, cycle := sub.ServiceName, sub.Color, sub.Currency, sub.BillingCycle
+		anchor, cancelled, trialEndsAt, paymentMethodName := sub.BillingDate, sub.CancelledAt, sub.TrialEndsAt, sub.PaymentMethodName
+		if day < 1 || day > 31 || (cycle != "monthly" && cycle != "yearly") {
+			continue
 		}
-		billDate := time.Date(y, m, min(day, last), 0, 0, 0, 0, a.location)
-		billingAnchor, parseErr := time.ParseInLocation("2006-01-02", anchor[:10], a.location)
+		override, overridden := projection.Overrides[occurrenceKey{id, period}]
+		skipped := override.Skipped
+		billDate := time.Date(y, m, min(day, last), 0, 0, 0, 0, loc)
+		billingAnchor, parseErr := storedDate(anchor, loc)
 		if parseErr != nil {
 			continue
 		}
@@ -497,7 +566,10 @@ func (a *application) loadPaymentOccurrencesWithPriceHistory(period string, hist
 			continue
 		}
 		if cancelled != "" {
-			c, _ := time.ParseInLocation("2006-01-02", cancelled[:10], a.location)
+			c, err := storedDate(cancelled, loc)
+			if err != nil {
+				continue
+			}
 			if billDate.After(c) {
 				continue
 			}
@@ -505,14 +577,14 @@ func (a *application) loadPaymentOccurrencesWithPriceHistory(period string, hist
 		if cycle == "yearly" && int(m) != int(billingAnchor.Month()) {
 			continue
 		}
-		if occurrenceAmount.Valid {
-			amount = occurrenceAmount.Int64
-			if occurrenceCurrency.Valid && occurrenceCurrency.String != "" {
-				currency = occurrenceCurrency.String
+		if overridden {
+			amount = override.Amount
+			if override.Currency != "" {
+				currency = override.Currency
 			}
 		} else {
 			billDateText := billDate.Format("2006-01-02")
-			for _, point := range history[int64(id)] {
+			for _, point := range projection.History[id] {
 				if point.EffectiveFrom <= billDateText {
 					amount = point.Amount
 					currency = point.Currency
@@ -523,7 +595,7 @@ func (a *application) loadPaymentOccurrencesWithPriceHistory(period string, hist
 		}
 		currency = strings.ToUpper(currency)
 		month.Items = append(month.Items, paymentOccurrence{
-			SubscriptionID:    int64(id),
+			SubscriptionID:    id,
 			ServiceName:       serviceName,
 			Color:             color,
 			Amount:            amount,
@@ -537,9 +609,6 @@ func (a *application) loadPaymentOccurrencesWithPriceHistory(period string, hist
 		if !skipped {
 			month.Totals[currency] += amount
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return upcomingMonth{}, err
 	}
 	sort.SliceStable(month.Items, func(i, j int) bool {
 		if month.Items[i].ScheduledDate == month.Items[j].ScheduledDate {
@@ -593,10 +662,22 @@ func (a *application) exportUpcoming(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *application) upcomingICS(start, end time.Time) (string, error) {
+	subs, err := a.loadSubscriptions()
+	if err != nil {
+		return "", err
+	}
+	history, err := a.loadSubscriptionPriceHistory()
+	if err != nil {
+		return "", err
+	}
+	projection, err := a.loadPaymentProjection(start.Format("2006-01"), end.Format("2006-01"), subs, history)
+	if err != nil {
+		return "", err
+	}
 	items := make([]paymentOccurrence, 0)
 	dtstamp := time.Now().UTC().Format("20060102T150405Z")
 	for month := time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, a.location); !month.After(end); month = month.AddDate(0, 1, 0) {
-		occurrences, err := a.loadPaymentOccurrences(month.Format("2006-01"))
+		occurrences, err := projection.month(month.Format("2006-01"), a.location)
 		if err != nil {
 			return "", err
 		}

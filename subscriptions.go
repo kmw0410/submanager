@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 	"strings"
@@ -60,15 +62,6 @@ func (a *application) createSubscription(w http.ResponseWriter, r *http.Request)
 	if !validOrError(w, validateSub(v)) {
 		return
 	}
-	var currencyCount int
-	if err := a.db.QueryRow(`SELECT COUNT(*) FROM currencies WHERE code=? AND archived=0`, v.Currency).Scan(&currencyCount); err != nil {
-		a.fail(w, err)
-		return
-	}
-	if currencyCount != 1 {
-		bad(w, "사용할 수 없는 통화예요")
-		return
-	}
 	if v.Icon == "" {
 		v.Icon = initial(v.ServiceName)
 	}
@@ -78,13 +71,17 @@ func (a *application) createSubscription(w http.ResponseWriter, r *http.Request)
 	billingDate, _ := time.Parse("2006-01-02", v.BillingDate)
 	v.BillingDay = billingDate.Day()
 	startedAt := time.Now().In(a.location).Format("2006-01-02")
-	tx, err := a.db.Begin()
+	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		a.fail(w, err)
 		return
 	}
 	defer tx.Rollback()
-	res, err := tx.Exec(
+	if !a.validSubscriptionReferences(w, r.Context(), tx, v, 0) {
+		return
+	}
+
+	res, err := tx.ExecContext(r.Context(),
 		`INSERT INTO subscriptions(
 			service_id,
 			service_name,
@@ -120,9 +117,13 @@ func (a *application) createSubscription(w http.ResponseWriter, r *http.Request)
 		a.fail(w, err)
 		return
 	}
-	id, _ := res.LastInsertId()
-	if _, err = tx.Exec(`INSERT INTO subscription_price_history(subscription_id,amount,currency,effective_from) VALUES(?,?,?,?)`, id, v.Amount, v.Currency, startedAt); err == nil {
-		_, err = tx.Exec(`INSERT INTO activity_events(subscription_id,event_type,service_name,new_amount,new_currency) VALUES(?,'added',?,?,?)`, id, strings.TrimSpace(v.ServiceName), v.Amount, v.Currency)
+	id, err := res.LastInsertId()
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	if _, err = tx.ExecContext(r.Context(), `INSERT INTO subscription_price_history(subscription_id,amount,currency,effective_from) VALUES(?,?,?,?)`, id, v.Amount, v.Currency, startedAt); err == nil {
+		_, err = tx.ExecContext(r.Context(), `INSERT INTO activity_events(subscription_id,event_type,service_name,new_amount,new_currency) VALUES(?,'added',?,?,?)`, id, strings.TrimSpace(v.ServiceName), v.Amount, v.Currency)
 	}
 	if err != nil {
 		a.fail(w, err)
@@ -132,7 +133,6 @@ func (a *application) createSubscription(w http.ResponseWriter, r *http.Request)
 		a.fail(w, err)
 		return
 	}
-	go a.notifyChange("➕ 구독 추가\n\n" + strings.TrimSpace(v.ServiceName) + "\n" + money(v.Amount, v.Currency))
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
 }
 
@@ -149,30 +149,24 @@ func (a *application) updateSubscription(w http.ResponseWriter, r *http.Request)
 	if !validOrError(w, validateSub(v)) {
 		return
 	}
-	var currencyCount int
-	if err := a.db.QueryRow(`SELECT COUNT(*) FROM currencies WHERE code=? AND archived=0`, v.Currency).Scan(&currencyCount); err != nil {
-		a.fail(w, err)
-		return
-	}
-	if currencyCount != 1 {
-		bad(w, "사용할 수 없는 통화예요")
-		return
-	}
-	var oldName, oldCurrency string
-	var oldAmount int64
-	if err := a.db.QueryRow(`SELECT service_name,amount,currency FROM subscriptions WHERE id=? AND status='active'`, id).Scan(&oldName, &oldAmount, &oldCurrency); err != nil {
-		notFoundOrFail(a, w, err)
-		return
-	}
 	billingDate, _ := time.Parse("2006-01-02", v.BillingDate)
 	v.BillingDay = billingDate.Day()
-	tx, err := a.db.Begin()
+	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		a.fail(w, err)
 		return
 	}
 	defer tx.Rollback()
-	res, err := tx.Exec(
+	var oldCurrency string
+	var oldAmount, oldMethod int64
+	if err := tx.QueryRowContext(r.Context(), `SELECT amount,currency,payment_method_id FROM subscriptions WHERE id=? AND status='active'`, id).Scan(&oldAmount, &oldCurrency, &oldMethod); err != nil {
+		notFoundOrFail(a, w, err)
+		return
+	}
+	if !a.validSubscriptionReferences(w, r.Context(), tx, v, oldMethod) {
+		return
+	}
+	res, err := tx.ExecContext(r.Context(),
 		`UPDATE subscriptions SET
 			service_id=?,
 			service_name=?,
@@ -210,9 +204,9 @@ func (a *application) updateSubscription(w http.ResponseWriter, r *http.Request)
 	}
 	if oldAmount != v.Amount || oldCurrency != v.Currency {
 		effective := time.Now().In(a.location).Format("2006-01-02")
-		_, err = tx.Exec(`INSERT INTO subscription_price_history(subscription_id,amount,currency,effective_from) VALUES(?,?,?,?)`, id, v.Amount, v.Currency, effective)
+		_, err = tx.ExecContext(r.Context(), `INSERT INTO subscription_price_history(subscription_id,amount,currency,effective_from) VALUES(?,?,?,?)`, id, v.Amount, v.Currency, effective)
 		if err == nil {
-			_, err = tx.Exec(`INSERT INTO activity_events(subscription_id,event_type,service_name,old_amount,old_currency,new_amount,new_currency) VALUES(?,'price_changed',?,?,?,?,?)`, id, strings.TrimSpace(v.ServiceName), oldAmount, oldCurrency, v.Amount, v.Currency)
+			_, err = tx.ExecContext(r.Context(), `INSERT INTO activity_events(subscription_id,event_type,service_name,old_amount,old_currency,new_amount,new_currency) VALUES(?,'price_changed',?,?,?,?,?)`, id, strings.TrimSpace(v.ServiceName), oldAmount, oldCurrency, v.Amount, v.Currency)
 		}
 	}
 	if err != nil {
@@ -223,7 +217,6 @@ func (a *application) updateSubscription(w http.ResponseWriter, r *http.Request)
 		a.fail(w, err)
 		return
 	}
-	go a.notifyChange("✏️ 구독 변경\n\n" + strings.TrimSpace(v.ServiceName) + "\n" + money(v.Amount, v.Currency))
 	changed(w, res)
 }
 
@@ -233,16 +226,26 @@ func (a *application) skipSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var v struct {
-		Skipped bool `json:"skipped"`
+		Skipped *bool `json:"skipped"`
 	}
 	if !decode(w, r, &v) {
 		return
 	}
+	if v.Skipped == nil {
+		bad(w, "결제 건너뛰기 상태를 입력해 주세요")
+		return
+	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	defer tx.Rollback()
 	now := time.Now().In(a.location)
 	var amount int64
 	var day int
 	var currency string
-	if err := a.db.QueryRow(`SELECT amount,billing_day,currency FROM subscriptions WHERE id=? AND status='active'`, id).Scan(&amount, &day, &currency); err != nil {
+	if err := tx.QueryRowContext(r.Context(), `SELECT amount,billing_day,currency FROM subscriptions WHERE id=? AND status='active'`, id).Scan(&amount, &day, &currency); err != nil {
 		notFoundOrFail(a, w, err)
 		return
 	}
@@ -257,7 +260,25 @@ func (a *application) skipSubscription(w http.ResponseWriter, r *http.Request) {
 		0,
 		a.location,
 	).Format("2006-01-02")
-	_, err := a.db.Exec(
+	baseAmount, baseCurrency := amount, currency
+	var storedDate string
+	err = tx.QueryRowContext(r.Context(), `SELECT scheduled_date,amount,currency FROM subscription_occurrences WHERE subscription_id=? AND period=?`, id, now.Format("2006-01")).Scan(&storedDate, &amount, &currency)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		a.fail(w, err)
+		return
+	}
+	if errors.Is(err, sql.ErrNoRows) || storedDate != date {
+		amount, currency = baseAmount, baseCurrency
+		// A skip changes inclusion, not the price of an already billed period.
+		// Preserve an existing snapshot when its scheduled date stays the same;
+		// otherwise select the price effective on the new billing date.
+		err = tx.QueryRowContext(r.Context(), `SELECT amount,currency FROM subscription_price_history WHERE subscription_id=? AND effective_from<=? ORDER BY effective_from DESC,id DESC LIMIT 1`, id, date).Scan(&amount, &currency)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			a.fail(w, err)
+			return
+		}
+	}
+	_, err = tx.ExecContext(r.Context(),
 		`INSERT INTO subscription_occurrences(
 			subscription_id,
 			period,
@@ -268,6 +289,7 @@ func (a *application) skipSubscription(w http.ResponseWriter, r *http.Request) {
 		) VALUES(?,?,?,?,?,?)
 		ON CONFLICT(subscription_id,period) DO UPDATE SET
 			skipped=excluded.skipped,
+			scheduled_date=excluded.scheduled_date,
 			amount=excluded.amount,
 			currency=excluded.currency,
 			updated_at=CURRENT_TIMESTAMP`,
@@ -276,9 +298,13 @@ func (a *application) skipSubscription(w http.ResponseWriter, r *http.Request) {
 		date,
 		amount,
 		currency,
-		v.Skipped,
+		*v.Skipped,
 	)
 	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	if err = tx.Commit(); err != nil {
 		a.fail(w, err)
 		return
 	}
@@ -290,17 +316,53 @@ func (a *application) cancelSubscription(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	var name string
-	if err := a.db.QueryRow(`SELECT service_name FROM subscriptions WHERE id=? AND status='active'`, id).Scan(&name); err != nil {
-		notFoundOrFail(a, w, err)
-		return
-	}
-	res, err := a.db.Exec(`UPDATE subscriptions SET status='cancelled',cancelled_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='active'`, time.Now().In(a.location).Format("2006-01-02"), id)
+	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		a.fail(w, err)
 		return
 	}
-	_, _ = a.db.Exec(`INSERT INTO activity_events(subscription_id,event_type,service_name) VALUES(?,'cancelled',?)`, id, name)
-	go a.notifyChange("👋 구독 해지\n\n" + name + " 구독을 해지했어요.")
+	defer tx.Rollback()
+	var name string
+	if err := tx.QueryRowContext(r.Context(), `SELECT service_name FROM subscriptions WHERE id=? AND status='active'`, id).Scan(&name); err != nil {
+		notFoundOrFail(a, w, err)
+		return
+	}
+	res, err := tx.ExecContext(r.Context(), `UPDATE subscriptions SET status='cancelled',cancelled_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='active'`, time.Now().In(a.location).Format("2006-01-02"), id)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	if _, err = tx.ExecContext(r.Context(), `INSERT INTO activity_events(subscription_id,event_type,service_name) VALUES(?,'cancelled',?)`, id, name); err != nil {
+		a.fail(w, err)
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		a.fail(w, err)
+		return
+	}
 	changed(w, res)
+}
+
+func (a *application) validSubscriptionReferences(w http.ResponseWriter, ctx context.Context, tx *sql.Tx, v subInput, retainedMethod int64) bool {
+	var currencyOK, methodOK, serviceOK bool
+	err := tx.QueryRowContext(ctx, `SELECT
+		EXISTS(SELECT 1 FROM currencies WHERE code=? AND archived=0),
+		EXISTS(SELECT 1 FROM payment_methods WHERE id=? AND (archived=0 OR id=?)),
+		(? IS NULL OR EXISTS(SELECT 1 FROM services WHERE id=?))`,
+		v.Currency, v.PaymentMethodID, retainedMethod, v.ServiceID, v.ServiceID).Scan(&currencyOK, &methodOK, &serviceOK)
+	if err != nil {
+		a.fail(w, err)
+		return false
+	}
+	switch {
+	case !currencyOK:
+		bad(w, "사용할 수 없는 통화예요")
+	case !methodOK:
+		bad(w, "사용할 수 없는 결제수단이에요")
+	case !serviceOK:
+		bad(w, "사용할 수 없는 서비스예요")
+	default:
+		return true
+	}
+	return false
 }

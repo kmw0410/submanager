@@ -2,7 +2,8 @@ package main
 
 import (
 	"database/sql"
-	"strings"
+	"errors"
+	"math"
 )
 
 type service struct {
@@ -119,11 +120,11 @@ CREATE INDEX IF NOT EXISTS idx_activity_events_date
 CREATE TABLE IF NOT EXISTS notification_channels (
     id INTEGER PRIMARY KEY CHECK(id=1),
     discord_webhook TEXT NOT NULL DEFAULT '',
-    discord_enabled INTEGER NOT NULL DEFAULT 1,
+    discord_enabled INTEGER NOT NULL DEFAULT 0,
     telegram_bot_token TEXT NOT NULL DEFAULT '',
     telegram_chat_id TEXT NOT NULL DEFAULT '',
-    telegram_enabled INTEGER NOT NULL DEFAULT 1,
-    pwa_enabled INTEGER NOT NULL DEFAULT 1,
+    telegram_enabled INTEGER NOT NULL DEFAULT 0,
+    pwa_enabled INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS pwa_push_subscriptions (
@@ -152,7 +153,6 @@ CREATE TABLE IF NOT EXISTS app_metadata (
     value TEXT NOT NULL
 );
 INSERT OR IGNORE INTO users(id,name,currency) VALUES(1,'사용자','KRW');
-INSERT OR IGNORE INTO notification_channels(id) VALUES(1);
 INSERT OR IGNORE INTO notification_rules(id) VALUES(1);
 `
 	if _, err := a.db.Exec(schema); err != nil {
@@ -173,13 +173,7 @@ INSERT OR IGNORE INTO notification_rules(id) VALUES(1);
 	if err := a.ensureColumn("sessions", "user_agent", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := a.ensureColumn("notification_channels", "discord_enabled", "INTEGER NOT NULL DEFAULT 1"); err != nil {
-		return err
-	}
-	if err := a.ensureColumn("notification_channels", "telegram_enabled", "INTEGER NOT NULL DEFAULT 1"); err != nil {
-		return err
-	}
-	if err := a.ensureColumn("notification_channels", "pwa_enabled", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+	if err := a.migrateNotificationToggles(); err != nil {
 		return err
 	}
 	columns := []struct {
@@ -247,12 +241,71 @@ INSERT OR IGNORE INTO notification_rules(id) VALUES(1);
 			return err
 		}
 	}
-	_, _ = a.db.Exec(`UPDATE services SET supports_trial=1 WHERE name IN ('YouTube Premium','ChatGPT','Claude','Spotify','FLO','밀리의 서재')`)
+	if _, err := a.db.Exec(`UPDATE services SET supports_trial=1 WHERE name IN ('YouTube Premium','ChatGPT','Claude','Spotify','FLO','밀리의 서재')`); err != nil {
+		return err
+	}
 	_, err := a.db.Exec(`INSERT INTO subscription_price_history(subscription_id,amount,currency,effective_from) SELECT s.id,s.amount,s.currency,substr(s.started_at,1,10) FROM subscriptions s WHERE NOT EXISTS(SELECT 1 FROM subscription_price_history h WHERE h.subscription_id=s.id)`)
 	if err != nil {
 		return err
 	}
 	return nil
+}
+
+// Existing explicit choices stay unchanged. Before channel toggles existed,
+// configured Discord/Telegram credentials enabled delivery implicitly; preserve
+// that behavior only while adding their missing columns. New rows and a newly
+// introduced PWA toggle stay off.
+func (a *application) migrateNotificationToggles() error {
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`PRAGMA table_info(notification_channels)`)
+	if err != nil {
+		return err
+	}
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, kind string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &kind, &notNull, &defaultValue, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, toggle := range []struct{ column, legacyEnabled string }{
+		{"discord_enabled", `trim(discord_webhook)<>''`},
+		{"telegram_enabled", `trim(telegram_bot_token)<>'' AND trim(telegram_chat_id)<>''`},
+		{"pwa_enabled", ""},
+	} {
+		if columns[toggle.column] {
+			continue
+		}
+		// Identifiers and conditions come only from the fixed schema list above.
+		if _, err := tx.Exec(`ALTER TABLE notification_channels ADD COLUMN ` + toggle.column + ` INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+		if toggle.legacyEnabled != "" {
+			if _, err := tx.Exec(`UPDATE notification_channels SET ` + toggle.column + `=1 WHERE ` + toggle.legacyEnabled); err != nil {
+				return err
+			}
+		}
+	}
+	// Existing tables may still have DEFAULT 1; explicitly seed missing rows off.
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO notification_channels(id,discord_enabled,telegram_enabled,pwa_enabled) VALUES(1,0,0,0)`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (a *application) migrateAmountsToMinorUnits() error {
@@ -268,7 +321,9 @@ func (a *application) migrateAmountsToMinorUnits() error {
 	if done != 0 {
 		return tx.Commit()
 	}
-	rows, err := tx.Query(`SELECT DISTINCT currency FROM (SELECT currency FROM subscriptions UNION SELECT currency FROM subscription_occurrences UNION SELECT currency FROM subscription_price_history UNION SELECT old_currency FROM activity_events UNION SELECT new_currency FROM activity_events) WHERE currency IS NOT NULL AND currency<>''`)
+	// Normalize before deduplication: legacy data can contain USD and usd.
+	// Processing both would multiply every matching amount twice.
+	rows, err := tx.Query(`SELECT DISTINCT UPPER(currency) FROM (SELECT currency FROM subscriptions UNION SELECT currency FROM subscription_occurrences UNION SELECT currency FROM subscription_price_history UNION SELECT old_currency FROM activity_events UNION SELECT new_currency FROM activity_events) WHERE currency IS NOT NULL AND currency<>''`)
 	if err != nil {
 		return err
 	}
@@ -279,7 +334,11 @@ func (a *application) migrateAmountsToMinorUnits() error {
 			rows.Close()
 			return err
 		}
-		currencies = append(currencies, strings.ToUpper(currency))
+		currencies = append(currencies, currency)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
 	}
 	if err := rows.Close(); err != nil {
 		return err
@@ -288,6 +347,21 @@ func (a *application) migrateAmountsToMinorUnits() error {
 		factor := minorUnitFactor(currency)
 		if factor == 1 {
 			continue
+		}
+		// SQLite promotes overflowing integer multiplication to REAL. Reject
+		// unrepresentable legacy amounts instead of losing integer money precision.
+		var overflow bool
+		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM (
+			SELECT amount,currency FROM subscriptions
+			UNION ALL SELECT amount,currency FROM subscription_occurrences
+			UNION ALL SELECT amount,currency FROM subscription_price_history
+			UNION ALL SELECT old_amount,old_currency FROM activity_events
+			UNION ALL SELECT new_amount,new_currency FROM activity_events
+		) WHERE UPPER(currency)=? AND (amount>? OR amount<?))`, currency, int64(math.MaxInt64)/factor, int64(math.MinInt64)/factor).Scan(&overflow); err != nil {
+			return err
+		}
+		if overflow {
+			return errors.New("legacy amount exceeds the supported integer range")
 		}
 		for _, query := range []string{
 			`UPDATE subscriptions SET amount=amount*? WHERE UPPER(currency)=?`,
@@ -323,6 +397,10 @@ func (a *application) ensureColumn(table, column, definition string) error {
 		if name == column {
 			return rows.Close()
 		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
 	}
 	if err := rows.Close(); err != nil {
 		return err

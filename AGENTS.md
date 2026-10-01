@@ -20,7 +20,7 @@ submanager/
 ├── AGENTS.md
 ├── Dockerfile
 ├── README.md
-├── compose.yaml
+├── docker-compose.yml
 ├── go.mod
 ├── go.sum
 ├── auth.go
@@ -28,7 +28,7 @@ submanager/
 ├── dashboard.go
 ├── http.go
 ├── migrations.go
-├── main_test.go
+├── *_test.go
 ├── notifications.go
 ├── server.go
 ├── settings.go
@@ -103,7 +103,7 @@ Migration rules:
 - Add migration and round-trip tests for schema changes.
 
 Seed rules:
-- Keep the 8 built-in service templates idempotent.
+- Keep the 18 built-in service templates idempotent.
 - Keep the 5 built-in payment methods idempotent and immutable through normal custom-item endpoints.
 - Keep the built-in currencies `KRW`, `USD`, `JPY`, `EUR`, `TRY`, and `ARS` idempotent.
 - Built-in records must not be duplicated by repeated migrations.
@@ -170,9 +170,9 @@ API rules:
 - Keep `/health` lightweight and independent of authenticated dashboard rendering.
 
 ## 10. Backup and Restore
-- Backup format version is currently `1`; reject unsupported versions.
+- Backup export format version is currently `5`; import accepts versions `1` through `5` and rejects unsupported versions.
 - Export must exclude administrator password hashes and login sessions.
-- Export currently includes notification integration settings, including credentials. Keep the UI warning accurate if this changes.
+- Export excludes notification credentials and PWA push subscriptions by default; they are included only when explicitly selected. Keep the UI warning accurate.
 - Import replaces application data but must preserve the administrator password and active login sessions.
 - Perform import replacement and restoration in one transaction so a failed import does not leave partial data.
 - Maintain referential integrity and stable IDs across payment methods, currencies, subscriptions, occurrences, price history, and activities.
@@ -221,7 +221,7 @@ Runtime rules:
 - Keep the final image running as the unprivileged `submanager` user.
 - Persist `/data` through the named `submanager-data` volume.
 - Keep the container health check pointed at `/health`.
-- `compose.yaml` is the canonical local Docker configuration; keep environment variables under `environment`.
+- `docker-compose.yml` is the canonical local Docker configuration; keep environment variables under `environment`.
 
 ## 14. Security and Privacy
 - Never log or expose administrator passwords, password hashes, raw session tokens, Discord webhook URLs, Telegram bot tokens, or private backup contents.
@@ -242,6 +242,7 @@ Run before handing off Go changes:
 ```bash
 gofmt -w *.go
 go test ./...
+go test -race ./...
 go vet ./...
 go build ./...
 ```

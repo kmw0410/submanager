@@ -45,9 +45,10 @@ type attemptState struct {
 }
 
 type attemptLimiter struct {
-	mu       sync.Mutex
-	attempts map[string]attemptState
-	now      func() time.Time
+	mu        sync.Mutex
+	attempts  map[string]attemptState
+	now       func() time.Time
+	lastSweep time.Time
 }
 
 func newAttemptLimiter() *attemptLimiter {
@@ -58,6 +59,7 @@ func (l *attemptLimiter) allowed(keys ...string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
+	l.sweepExpired(now)
 	for _, key := range keys {
 		state, ok := l.attempts[key]
 		if ok && now.Sub(state.windowStart) >= authAttemptWindow {
@@ -75,6 +77,7 @@ func (l *attemptLimiter) failure(keys ...string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
+	l.sweepExpired(now)
 	for _, key := range keys {
 		state, ok := l.attempts[key]
 		if !ok || now.Sub(state.windowStart) >= authAttemptWindow {
@@ -83,6 +86,19 @@ func (l *attemptLimiter) failure(keys ...string) {
 		state.count++
 		l.attempts[key] = state
 	}
+}
+
+// Called under mu, at most once a minute even with many distinct failed accounts.
+func (l *attemptLimiter) sweepExpired(now time.Time) {
+	if !l.lastSweep.IsZero() && now.Sub(l.lastSweep) < time.Minute {
+		return
+	}
+	for key, state := range l.attempts {
+		if now.Sub(state.windowStart) >= authAttemptWindow {
+			delete(l.attempts, key)
+		}
+	}
+	l.lastSweep = now
 }
 
 func (l *attemptLimiter) reset(keys ...string) {
@@ -143,47 +159,9 @@ func main() {
 	defer stopWorker()
 	go app.notificationLoop(workerCtx)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /", app.index)
-	mux.HandleFunc("GET /assets/app.css", serveEmbedded("web/app.css", "text/css; charset=utf-8"))
-	mux.HandleFunc("GET /assets/app.js", serveEmbedded("web/app.js", "application/javascript; charset=utf-8"))
-	mux.HandleFunc("GET /manifest.webmanifest", serveEmbedded("web/manifest.webmanifest", "application/manifest+json; charset=utf-8"))
-	mux.HandleFunc("GET /icon.svg", serveEmbedded("web/icon.svg", "image/svg+xml"))
-	mux.HandleFunc("GET /sw.js", serveEmbedded("web/sw.js", "application/javascript; charset=utf-8"))
-	mux.HandleFunc("POST /auth/setup", app.setupAccount)
-	mux.HandleFunc("POST /auth/login", app.login)
-	mux.HandleFunc("POST /auth/logout", app.requireAuth(app.logout))
-	mux.HandleFunc("GET /api/state", app.requireAuth(app.getState))
-	mux.HandleFunc("GET /api/upcoming", app.requireAuth(app.getUpcomingMonth))
-	mux.HandleFunc("GET /api/upcoming/export", app.requireAuth(app.exportUpcoming))
-	mux.HandleFunc("POST /api/subscriptions", app.requireAuth(app.createSubscription))
-	mux.HandleFunc("PUT /api/subscriptions/{id}", app.requireAuth(app.updateSubscription))
-	mux.HandleFunc("POST /api/subscriptions/{id}/skip", app.requireAuth(app.skipSubscription))
-	mux.HandleFunc("POST /api/subscriptions/{id}/cancel", app.requireAuth(app.cancelSubscription))
-	mux.HandleFunc("PUT /api/settings", app.requireAuth(app.updateSettings))
-	mux.HandleFunc("PUT /api/account/email", app.requireAuth(app.updateAccountEmail))
-	mux.HandleFunc("PUT /api/account/password", app.requireAuth(app.updateAccountPassword))
-	mux.HandleFunc("GET /api/sessions", app.requireAuth(app.listSessions))
-	mux.HandleFunc("DELETE /api/sessions", app.requireAuth(app.deleteOtherSessions))
-	mux.HandleFunc("DELETE /api/sessions/{id}", app.requireAuth(app.deleteSession))
-	mux.HandleFunc("POST /api/payment-methods", app.requireAuth(app.createPaymentMethod))
-	mux.HandleFunc("PUT /api/payment-methods/{id}", app.requireAuth(app.updatePaymentMethod))
-	mux.HandleFunc("DELETE /api/payment-methods/{id}", app.requireAuth(app.deletePaymentMethod))
-	mux.HandleFunc("POST /api/currencies", app.requireAuth(app.createCurrency))
-	mux.HandleFunc("DELETE /api/currencies/{id}", app.requireAuth(app.deleteCurrency))
-	mux.HandleFunc("POST /api/notifications/test", app.requireAuth(app.testNotification))
-	mux.HandleFunc("GET /api/pwa/vapid-public", app.requireAuth(app.pwaPublicKey))
-	mux.HandleFunc("POST /api/pwa/subscriptions", app.requireAuth(app.savePWASubscription))
-	mux.HandleFunc("DELETE /api/pwa/subscriptions", app.requireAuth(app.deletePWASubscription))
-	mux.HandleFunc("GET /api/data/export", app.requireAuth(app.exportData))
-	mux.HandleFunc("POST /api/data/import", app.requireAuth(app.importData))
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})
-
 	server := &http.Server{
 		Addr:              ":" + env("PORT", "8080"),
-		Handler:           logging(recoverer(securityHeaders(mux))),
+		Handler:           logging(recoverer(securityHeaders(app.routes()))),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
@@ -200,6 +178,49 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = server.Shutdown(ctx)
+}
+
+// routes is shared by the runtime and HTTP boundary tests.
+func (a *application) routes() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /", a.index)
+	mux.HandleFunc("GET /assets/app.css", serveEmbedded("web/app.css", "text/css; charset=utf-8"))
+	mux.HandleFunc("GET /assets/app.js", serveEmbedded("web/app.js", "application/javascript; charset=utf-8"))
+	mux.HandleFunc("GET /manifest.webmanifest", serveEmbedded("web/manifest.webmanifest", "application/manifest+json; charset=utf-8"))
+	mux.HandleFunc("GET /icon.svg", serveEmbedded("web/icon.svg", "image/svg+xml"))
+	mux.HandleFunc("GET /sw.js", serveEmbedded("web/sw.js", "application/javascript; charset=utf-8"))
+	mux.HandleFunc("POST /auth/setup", a.setupAccount)
+	mux.HandleFunc("POST /auth/login", a.login)
+	mux.HandleFunc("POST /auth/logout", a.requireAuth(a.logout))
+	mux.HandleFunc("GET /api/state", a.requireAuth(a.getState))
+	mux.HandleFunc("GET /api/upcoming", a.requireAuth(a.getUpcomingMonth))
+	mux.HandleFunc("GET /api/upcoming/export", a.requireAuth(a.exportUpcoming))
+	mux.HandleFunc("POST /api/subscriptions", a.requireAuth(a.createSubscription))
+	mux.HandleFunc("PUT /api/subscriptions/{id}", a.requireAuth(a.updateSubscription))
+	mux.HandleFunc("POST /api/subscriptions/{id}/skip", a.requireAuth(a.skipSubscription))
+	mux.HandleFunc("POST /api/subscriptions/{id}/cancel", a.requireAuth(a.cancelSubscription))
+	mux.HandleFunc("PUT /api/settings", a.requireAuth(a.updateSettings))
+	mux.HandleFunc("PUT /api/account/email", a.requireAuth(a.updateAccountEmail))
+	mux.HandleFunc("PUT /api/account/password", a.requireAuth(a.updateAccountPassword))
+	mux.HandleFunc("GET /api/sessions", a.requireAuth(a.listSessions))
+	mux.HandleFunc("DELETE /api/sessions", a.requireAuth(a.deleteOtherSessions))
+	mux.HandleFunc("DELETE /api/sessions/{id}", a.requireAuth(a.deleteSession))
+	mux.HandleFunc("POST /api/payment-methods", a.requireAuth(a.createPaymentMethod))
+	mux.HandleFunc("PUT /api/payment-methods/{id}", a.requireAuth(a.updatePaymentMethod))
+	mux.HandleFunc("DELETE /api/payment-methods/{id}", a.requireAuth(a.deletePaymentMethod))
+	mux.HandleFunc("POST /api/currencies", a.requireAuth(a.createCurrency))
+	mux.HandleFunc("DELETE /api/currencies/{id}", a.requireAuth(a.deleteCurrency))
+	mux.HandleFunc("POST /api/notifications/test", a.requireAuth(a.testNotification))
+	mux.HandleFunc("GET /api/pwa/vapid-public", a.requireAuth(a.pwaPublicKey))
+	mux.HandleFunc("POST /api/pwa/subscriptions", a.requireAuth(a.savePWASubscription))
+	mux.HandleFunc("DELETE /api/pwa/subscriptions", a.requireAuth(a.deletePWASubscription))
+	mux.HandleFunc("GET /api/data/export", a.requireAuth(a.exportData))
+	mux.HandleFunc("POST /api/data/import", a.requireAuth(a.importData))
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	return mux
 }
 
 func env(k, fallback string) string {
@@ -271,7 +292,7 @@ func recoverer(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if v := recover(); v != nil {
-				log.Printf("panic: %v", v)
+				log.Print("request panic recovered")
 				writeJSON(w, 500, map[string]string{"error": "잠시 후 다시 시도해 주세요"})
 			}
 		}()

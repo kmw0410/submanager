@@ -1,10 +1,31 @@
 (() => {
   "use strict";
-  let state = window.__INITIAL_STATE__;
+  function normalizeState(data) {
+    if (!data || !data.user || !data.stats) throw new Error("대시보드 정보를 불러오지 못했어요.");
+    const aliases = {
+      serviceId: "ServiceID", billingDay: "BillingDay", paymentMethodId: "PaymentMethodID",
+      billingDate: "BillingDate", trialEndsAt: "TrialEndsAt", isTrial: "IsTrial", skipped: "Skipped",
+    };
+    for (const key of ["subscriptions", "services", "paymentMethods", "currencies"]) {
+      if (!Array.isArray(data[key])) data[key] = [];
+    }
+    for (const subscription of data.subscriptions) {
+      for (const [source, target] of Object.entries(aliases)) {
+        if (Object.hasOwn(subscription, source)) subscription[target] = subscription[source];
+      }
+    }
+    return data;
+  }
+  let state = normalizeState(window.__INITIAL_STATE__);
+  let stateGeneration = 0;
+  let stateRequest = 0;
   let currentView = "dashboard";
   let selectedCurrency = "all";
   let subscriptionQuery = "";
   let subscriptionCategory = "";
+  let subscriptionStatus = "active";
+  let subscriptionSort = "next";
+  const quickSkipPending = new Set();
   let upcomingView = "list";
   let deferredInstallPrompt = null;
   const pwaInstalled = () =>
@@ -28,7 +49,10 @@
   );
   const currencyFormatters = new Map();
   function replaceState(nextState) {
-    state = nextState;
+    state = normalizeState(nextState);
+    stateGeneration++;
+    upcomingRequest++;
+    upcomingMonths.clear();
     currencyDigitsByCode.clear();
     (state.currencies || []).forEach((currency) =>
       currencyDigitsByCode.set(currency.code, currency.digits)
@@ -74,7 +98,7 @@
     document.documentElement.dataset.themePreference = preference;
     document.querySelector('meta[name="theme-color"]').content = resolved === "dark"
       ? "#09090B"
-      : "#F6F7F5";
+      : "#F7F7F8";
     themeButton.innerHTML = themeIcons[preference];
     const next = themeModes[(themeModes.indexOf(preference) + 1) % themeModes.length];
     themeButton.title = `테마: ${themeLabels[preference]} · 클릭하여 ${themeLabels[next]}로 변경`;
@@ -93,7 +117,7 @@
       /[&<>'"]/g,
       (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[c]),
     );
-  const serviceColor = (value) => /^#[0-9a-f]{6}$/i.test(value || "") ? value : "#9AB8A8";
+  const serviceColor = (value) => /^#[0-9a-f]{6}$/i.test(value || "") ? value : "#D4D4D8";
   const currencyDigits = (currency) => currencyDigitsByCode.get(String(currency).toUpperCase()) ?? 2;
   const amountValue = (value, currency) =>
     (Number(value || 0) / (10 ** currencyDigits(currency))).toFixed(currencyDigits(currency));
@@ -184,11 +208,11 @@
     if (selectedCurrency !== "all" && !currencies.some((c) => c.currency === selectedCurrency)) {
       selectedCurrency = "all";
     }
-    return `<div class="currency-tabs"><button type="button" data-currency="all" class="${
+    return `<div class="currency-tabs"><button type="button" data-currency="all" aria-pressed="${selectedCurrency === "all"}" class="${
       selectedCurrency === "all" ? "active" : ""
     }">전체</button>${
       currencies.map((c) =>
-        `<button type="button" data-currency="${esc(c.currency)}" class="${
+        `<button type="button" data-currency="${esc(c.currency)}" aria-pressed="${selectedCurrency === c.currency}" class="${
           selectedCurrency === c.currency ? "active" : ""
         }">${esc(c.currency)}</button>`
       ).join("")
@@ -220,64 +244,66 @@
   }
 
   function renderDashboard() {
-    const subs = activeSubs().slice(0, 6);
+    const allSubs = activeSubs();
+    if (!state.subscriptions.length) {
+      main.innerHTML = `<div class="page">
+        <section class="welcome"><h1>${esc(state.stats.Greeting)}</h1><p>첫 구독을 추가하면 한눈에 정리해 드릴게요.</p></section>
+        <section class="dashboard-empty" aria-labelledby="emptyDashboardTitle">
+          <span class="empty-icon" aria-hidden="true">${uiIcons.plus}</span>
+          <h2 id="emptyDashboardTitle">아직 등록된 구독이 없어요.</h2>
+          <p>정기 결제 중인 서비스를 추가하면<br>월별 지출과 결제 일정을 한눈에 확인할 수 있어요.</p>
+          <button class="button primary" type="button" data-add-subscription>${uiIcons.plus} 첫 구독 추가</button>
+          <span class="help">월 지출 추이 · 다가오는 결제 · 연간 예상 비용</span>
+        </section>
+      </div>`;
+      return;
+    }
     const allCurrencies = state.stats.currencies || [];
     const tabs = currencyTabs();
     const series = selectedCurrency === "all"
-      ? allCurrencies
-      : allCurrencies.filter((c) => c.currency === selectedCurrency);
-    const selected = series[0];
+      ? allCurrencies : allCurrencies.filter((c) => c.currency === selectedCurrency);
     const total = selectedCurrency === "all"
       ? currencyAmountList(allCurrencies, "monthTotal")
-      : money(selected?.monthTotal || 0, selectedCurrency);
-    const delta = selectedCurrency === "all" ? "통화별 합계" : deltaText(selected);
-    const cards = subs.length
-      ? subs.map(subCard).join("")
-      : empty("현재 구독 중인 항목이 없어요.", "구독 추가를 눌러 추가해 보세요.");
+      : esc(money(series[0]?.monthTotal || 0, selectedCurrency));
+    const delta = selectedCurrency === "all" ? "통화별 합계" : deltaText(series[0]);
+    main.innerHTML = `<div class="page">
+      <section class="welcome"><h1>${esc(state.stats.Greeting)}</h1><p>이번 달 구독 현황을 확인해 보세요.</p></section>
+      <div class="dashboard-overview">
+        <section class="dashboard-chart" aria-labelledby="dashboardChartTitle">
+          <div class="section-head">
+            <div><h2 id="dashboardChartTitle">월별 지출</h2><p>최근 6개월 구독비 흐름</p></div>
+            <div class="chart-actions">${tabs}<button class="text-button" type="button" data-view="stats">자세히 보기</button></div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-top"><div><span class="eyebrow">이번 달 구독비</span><strong class="chart-total ${selectedCurrency === "all" ? "multi" : ""}">${total}</strong></div><span class="chart-delta">${esc(delta)}</span></div>
+            ${chart(series, state.stats.months)}
+          </div>
+        </section>
+        ${upcomingPreview(allSubs)}
+      </div>
+      ${pageHead("내 구독", `${allSubs.length}개의 활성 구독`, '<button class="text-button" type="button" data-view="subscriptions">전체 보기</button>')}
+      <section class="list-card" aria-label="구독 목록">${allSubs.length ? subscriptionList(allSubs.slice(0, 6)) : `<div class="dashboard-active-empty"><p>현재 이용 중인 구독이 없어요. 이전 지출 기록은 보관하고 있어요.</p><button class="button primary" type="button" data-add-subscription>구독 추가</button></div>`}</section>
+    </div>`;
+  }
 
-    main.innerHTML = `
-      <div class="page">
-        <section class="welcome">
-          <h1>${esc(state.stats.Greeting)}</h1>
-          <p>${esc(state.stats.Summary)}</p>
-        </section>
-        <div class="section-head">
-          <div>
-            <h2>월별 지출</h2>
-            <p>최근 6개월 구독비 흐름</p>
-          </div>
-          <div class="chart-actions">
-            ${tabs}
-            <button class="text-button" type="button" data-view="stats">자세히 보기</button>
-          </div>
-        </div>
-        <section
-          class="chart-card"
-          data-view="stats"
-          tabindex="0"
-          role="button"
-          aria-label="월별 지출 상세 보기"
-        >
-          <div class="chart-top">
-            <div>
-              <span class="eyebrow">이번 달 구독비</span>
-              <strong class="chart-total ${selectedCurrency === "all" ? "multi" : ""}">
-                ${total}
-              </strong>
-            </div>
-            <span class="chart-delta">${delta}</span>
-          </div>
-          ${chart(series, state.stats.months)}
-        </section>
-        ${
-      pageHead(
-        "이번 달 구독",
-        `${state.stats.ActiveCount}개의 활성 구독`,
-        '<button class="text-button" type="button" data-view="subscriptions">전체 보기</button>',
-      )
-    }
-        <section class="subscription-grid">${cards}</section>
-      </div>`;
+  function upcomingPreview(subscriptions) {
+    const upcoming = subscriptions.map((subscription) => ({ subscription, date: followingPayment(subscription) }))
+      .filter((item) => item.date)
+      .sort((a, b) => a.date.localeCompare(b.date) || a.subscription.ServiceName.localeCompare(b.subscription.ServiceName, "ko"));
+    return `<section class="upcoming-preview" aria-labelledby="upcomingPreviewTitle">
+      <div class="section-head"><div><h2 id="upcomingPreviewTitle">다가오는 결제</h2><p>가까운 결제부터 확인하세요.</p></div></div>
+      ${upcoming.length ? `<div class="upcoming-preview-list">${upcoming.slice(0, 8).map(({ subscription: s, date }) => `
+        <button class="upcoming-preview-row" type="button" data-edit-sub="${s.id}">
+          <span class="upcoming-preview-service"><strong>${esc(s.ServiceName)}</strong><small class="upcoming-preview-meta">${esc(date.replaceAll("-", "."))}${s.IsTrial ? " · 체험 후 결제" : ""}</small></span>
+          <span class="upcoming-preview-price"><strong>${esc(money(s.amount, s.Currency))}</strong><small class="upcoming-preview-due">${daysUntil(date) === 0 ? "오늘" : `D-${daysUntil(date)}`}</small></span>
+        </button>`).join("")}</div>` : '<p class="help">결제 예정 없음</p>'}
+      <button class="text-button" type="button" data-view="upcoming">전체 결제 일정 보기${upcoming.length > 8 ? ` · ${upcoming.length}건` : ""}</button>
+    </section>`;
+  }
+
+  function subscriptionList(subscriptions, { management = false } = {}) {
+    const labels = `<div class="list-row list-labels" aria-hidden="true"><span>서비스 / 카테고리</span><span>금액 / 주기</span><span>결제수단</span><span>${subscriptionStatus === "cancelled" && management ? "해지일" : "다음 결제"}</span></div>`;
+    return `${management ? `<div class="subscription-management-heading">${labels}<span class="subscription-actions-label" aria-hidden="true">이번 달 결제</span></div>` : labels}${subscriptions.map((subscription) => subscriptionRow(subscription, { management })).join("")}`;
   }
 
   function deltaText(stat) {
@@ -289,15 +315,23 @@
       : `지난달보다 -${money(-d, stat.currency)}`;
   }
 
+  // Fixed code slots keep a currency's line/legend identity across filters and themes.
+  const chartColors = ["primary", "secondary", "tertiary", "fourth", "fifth", "sixth"];
+  const currencyChartSlots = { KRW: 0, USD: 1, JPY: 2, EUR: 3, TRY: 4, ARS: 5 };
+  function chartColor(currency) {
+    const code = String(currency).toUpperCase();
+    const slot = currencyChartSlots[code] ?? (1 + [...code].reduce((sum, char) => sum * 31 + char.charCodeAt(0), 0) % 5);
+    return `var(--chart-${chartColors[slot]})`;
+  }
+
   function chart(series, labels) {
     const safeSeries = series.length
       ? series
       : [{ currency: state.user.Currency || "KRW", monthlyTotals: labels.map(() => 0) }];
     const w = 720,
       h = 145,
-      p = 10,
-      colors = ["#9AB8A8", "#AAB5D8", "#C6A98D", "#B2A7D6", "#D1B0B8"];
-    const paths = safeSeries.map((s, index) => {
+      p = 10;
+    const paths = safeSeries.map((s) => {
       const values = s.monthlyTotals,
         max = Math.max(...values, 1),
         min = Math.min(...values, 0),
@@ -312,9 +346,9 @@
         `${i ? "L" : "M"} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`
       ).join(" ");
       const area = `${line} L ${pts[pts.length - 1].x} ${h} L ${pts[0].x} ${h} Z`;
-      const color = colors[index % colors.length];
+      const color = chartColor(s.currency);
       return `${
-        safeSeries.length === 1 ? `<path class="chart-area" d="${area}"/>` : ""
+        safeSeries.length === 1 ? `<path class="chart-area" style="--chart-color:${color}" d="${area}"/>` : ""
       }<path class="chart-line" style="stroke:${color}" vector-effect="non-scaling-stroke" d="${line}"/>${
         pts.map((point) =>
           `<circle class="chart-dot" style="stroke:${color}" vector-effect="non-scaling-stroke" cx="${point.x}" cy="${point.y}" r="3.2"><title>${s.currency} · ${point.label} ${
@@ -324,8 +358,8 @@
       }`;
     }).join("");
     return `<div class="chart-wrap"><div class="chart-legend">${
-      safeSeries.map((s, i) =>
-        `<span><i style="background:${colors[i % colors.length]}"></i>${esc(s.currency)}</span>`
+      safeSeries.map((s) =>
+        `<span><i style="background:${chartColor(s.currency)}"></i>${esc(s.currency)}</span>`
       ).join("")
     }</div><svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${paths}</svg><div class="chart-labels">${
       labels.map(esc).map((x) => `<span>${x}</span>`).join("")
@@ -367,7 +401,7 @@
   }
 
   function renderSubscriptions() {
-    const subs = activeSubs();
+    const subs = state.subscriptions;
     const categories = [...new Set(subs.map((s) => s.Category || "기타"))].sort((a, b) =>
       a.localeCompare(b, "ko")
     );
@@ -385,7 +419,7 @@
       <div class="page">
         <section class="welcome">
           <h1>내 구독</h1>
-          <p>지금 이용 중인 서비스를 모아봤어요.</p>
+          <p>구독 상태와 결제 일정을 확인하고 관리하세요.</p>
         </section>
         <section class="subscription-tools" aria-label="구독 검색 및 필터">
           <label class="subscription-search">
@@ -410,6 +444,14 @@
             >전체</button>
             ${categoryButtons}
           </div>
+          <div class="subscription-list-controls">
+            <div class="subscription-status-filters category-filters" role="group" aria-label="구독 상태 필터">
+              ${[["active", "이용 중"], ["trial", "무료 체험"], ["skipped", "건너뜀"], ["cancelled", "해지됨"]].map(([status, label]) => `<button type="button" data-sub-status="${status}" aria-pressed="${subscriptionStatus === status}">${label}</button>`).join("")}
+            </div>
+            <label class="subscription-sort"><span>정렬</span><select id="subscriptionSort">
+              ${[["next", "다음 결제일순"], ["name", "이름순"], ["amount", "통화별 금액 높은 순"]].map(([sort, label]) => `<option value="${sort}" ${subscriptionSort === sort ? "selected" : ""}>${label}</option>`).join("")}
+            </select></label>
+          </div>
         </section>
         <div id="subscriptionHeading"></div>
         <section class="list-card" id="subscriptionResults" aria-live="polite"></section>
@@ -419,67 +461,149 @@
 
   function filteredSubscriptions() {
     const query = subscriptionQuery.trim().normalize("NFKC").toLocaleLowerCase("ko-KR");
-    return activeSubs().filter((s) => {
+    return state.subscriptions.filter((s) => {
+      if (subscriptionStatus === "cancelled" ? s.Status !== "cancelled" : s.Status !== "active") return false;
+      if (subscriptionStatus === "trial" && !s.IsTrial) return false;
+      if (subscriptionStatus === "skipped" && !s.Skipped) return false;
       const category = s.Category || "기타";
       if (subscriptionCategory && category !== subscriptionCategory) return false;
       if (!query) return true;
       return [s.ServiceName, category, s.PaymentMethodName, s.Memo].some((value) =>
         String(value || "").normalize("NFKC").toLocaleLowerCase("ko-KR").includes(query)
       );
+    }).sort((a, b) => {
+      const byName = () => a.ServiceName.localeCompare(b.ServiceName, "ko") || a.id - b.id;
+      if (subscriptionSort === "name") return byName();
+      if (subscriptionSort === "amount") return a.Currency.localeCompare(b.Currency) || b.amount - a.amount || byName();
+      const date = (subscription) => subscription.Status === "cancelled" ? "" : followingPayment(subscription);
+      return date(a).localeCompare(date(b)) || byName();
     });
   }
-  function subscriptionRow(s) {
-    const classes = ["list-row", s.IsTrial && "trial"]
-      .filter(Boolean)
-      .join(" ");
-    const label = s.Skipped ? ` aria-label="${esc(s.ServiceName)}, 이번 달 결제 건너뜀"` : "";
-    const category = s.IsTrial
-      ? "무료 체험 중"
-      : esc(s.Category || "기타");
-    const rowNextPayment = followingPayment(s);
-    const nextPayment = s.IsTrial
-      ? `${s.BillingDate.slice(5).replace("-", ".")}부터 결제`
-      : `${dueText(rowNextPayment)} · ${rowNextPayment.slice(5).replace("-", ".")}`;
 
-    return `
-      <button class="${classes}" type="button" data-edit-sub="${s.id}"${label}>
-        <span class="service-cell">
-          <span>
-            <strong>${esc(s.ServiceName)}</strong>
-            <span>${category}</span>
-          </span>
-        </span>
-        <span>
-          <strong>${money(s.amount, s.Currency)}</strong><br>
-          <small class="muted">${cycle(s.BillingCycle)}</small>
-        </span>
-        <span class="muted">${esc(s.PaymentMethodName)}</span>
-        <span>
-          <span class="status-pill">${nextPayment}</span>
-        </span>
-      </button>`;
+  function canQuickSkip(subscription) {
+    if (subscription.Status !== "active") return false;
+    if (subscription.Skipped) return true;
+    const now = today();
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const day = Math.min(subscription.BillingDay, lastDay);
+    const date = `${localDate().slice(0, 7)}-${String(day).padStart(2, "0")}`;
+    const anchor = subscription.BillingDate?.slice(0, 10);
+    if (!anchor || !Number.isInteger(day) || day < 1 || date < anchor) return false;
+    if (subscription.TrialEndsAt && date < subscription.TrialEndsAt.slice(0, 10)) return false;
+    return subscription.BillingCycle === "monthly" || (subscription.BillingCycle === "yearly" && date.slice(5, 7) === anchor.slice(5, 7));
   }
+
+  function subscriptionRow(s, { management = false } = {}) {
+    const classes = ["list-row", s.Skipped && "skipped", s.IsTrial && "trial", s.Status === "cancelled" && "cancelled"]
+      .filter(Boolean).join(" ");
+    const label = s.Skipped ? ` aria-label="${esc(s.ServiceName)}, 이번 달 결제 건너뜀"` : "";
+    const category = s.Status === "cancelled" ? "해지됨" : s.IsTrial ? "무료 체험 중" : esc(s.Category || "기타");
+    const rowNextPayment = followingPayment(s);
+    const nextPayment = s.Status === "cancelled"
+      ? `${esc((s.CancelledAt || "").slice(0, 10).replaceAll("-", "."))} 해지`
+      : s.IsTrial ? `${s.BillingDate.slice(5).replace("-", ".")}부터 결제`
+      : `${dueText(rowNextPayment)} · ${rowNextPayment.slice(5).replace("-", ".")}`;
+    const row = `<button class="${classes}" type="button" data-edit-sub="${s.id}"${label}>
+      <span class="service-cell"><span><strong>${esc(s.ServiceName)}</strong><span>${category}</span>
+        ${s.Skipped && s.Status === "active" ? '<small class="skip-status">이번 달 결제 건너뜀</small>' : ""}
+      </span></span>
+      <span><strong>${esc(money(s.amount, s.Currency))}</strong><br><small class="muted">${cycle(s.BillingCycle)}</small></span>
+      <span class="muted">${esc(s.PaymentMethodName)}</span>
+      <span><span class="status-pill">${nextPayment}</span></span>
+    </button>`;
+    if (!management) return row;
+    const action = canQuickSkip(s)
+      ? `<button class="button ghost small" type="button" data-quick-skip="${s.id}" aria-label="${esc(s.ServiceName)} 이번 달 결제 ${s.Skipped ? "다시 포함" : "건너뛰기"}" ${quickSkipPending.has(s.id) ? 'disabled aria-busy="true"' : ""}>${s.Skipped ? "다시 포함" : "이번 달 건너뛰기"}</button>`
+      : `<span class="help">${s.Status === "cancelled" ? "기록 보기" : "이번 달 결제 없음"}</span>`;
+    return `<div class="subscription-management-row">${row}<div class="subscription-row-actions">${action}</div></div>`;
+  }
+
   function renderSubscriptionResults() {
-    const subs = filteredSubscriptions(),
-      total = activeSubs().length,
-      filtered = subscriptionQuery.trim() || subscriptionCategory;
+    const subs = filteredSubscriptions();
+    const filtered = subscriptionQuery.trim() || subscriptionCategory;
+    const statusLabels = { active: "이용 중", trial: "무료 체험", skipped: "이번 달 건너뜀", cancelled: "해지됨" };
     document.querySelector("#subscriptionHeading").innerHTML = pageHead(
-      filtered ? `검색 결과 ${subs.length}개` : `활성 구독 ${total}개`,
-      "항목을 누르면 내용을 수정할 수 있어요.",
+      `${filtered ? "검색 결과" : statusLabels[subscriptionStatus]} ${subs.length}개`,
+      subscriptionStatus === "cancelled" ? "해지된 구독의 기록을 확인할 수 있어요." : "항목을 누르면 내용을 수정할 수 있어요.",
     );
     document.querySelector("#subscriptionResults").innerHTML = subs.length
-      ? `
-        <div class="list-row list-labels">
-          <span>서비스</span>
-          <span>금액 / 주기</span>
-          <span>결제수단</span>
-          <span>다음 결제</span>
-        </div>
-        ${subs.map(subscriptionRow).join("")}`
-      : empty(
-        filtered ? "검색 결과가 없어요." : "현재 구독 중인 항목이 없어요.",
-        filtered ? "검색어나 카테고리를 바꿔 보세요." : "구독 추가를 눌러 추가해 보세요.",
-      );
+      ? subscriptionList(subs, { management: true })
+      : subscriptionEmptyState(filtered, statusLabels[subscriptionStatus]);
+  }
+
+  function subscriptionEmptyState(filtered, statusLabel) {
+    if (!state.subscriptions.length) {
+      return `${empty("아직 등록된 구독이 없어요.", "정기 결제 중인 서비스를 추가해 보세요.")}<div class="subscription-empty-actions"><button class="button primary" type="button" data-add-subscription>첫 구독 추가</button></div>`;
+    }
+    if (filtered) {
+      return `${empty("검색 결과가 없어요.", "검색어나 카테고리, 상태를 바꿔 보세요.")}<div class="subscription-empty-actions"><button class="button ghost" type="button" data-reset-subscription-filters>필터 초기화</button></div>`;
+    }
+    return `${empty(`${statusLabel} 구독이 없어요.`, "다른 상태를 선택하거나 구독을 추가해 보세요.")}<div class="subscription-empty-actions"><button class="button ${subscriptionStatus === "active" ? "primary" : "ghost"}" type="button" ${subscriptionStatus === "active" ? "data-add-subscription" : "data-reset-subscription-filters"}>${subscriptionStatus === "active" ? "구독 추가" : "이용 중 구독 보기"}</button></div>`;
+  }
+
+  function subscriptionFocusSelector(element) {
+    if (!element || !main.contains(element)) return null;
+    if (element.id) return `#${CSS.escape(element.id)}`;
+    for (const attribute of ["data-quick-skip", "data-edit-sub", "data-sub-status", "data-sub-category"]) {
+      if (element.hasAttribute(attribute)) return `[${attribute}="${CSS.escape(element.getAttribute(attribute))}"]`;
+    }
+    return null;
+  }
+
+  function subscriptionPosition(fallbackFocus = null) {
+    return { x: window.scrollX, y: window.scrollY, focus: subscriptionFocusSelector(document.activeElement) || fallbackFocus };
+  }
+
+  function restoreSubscriptionPosition(position) {
+    const target = position.focus && main.querySelector(position.focus);
+    if (backdrop.hidden) (target || main.querySelector(`[data-sub-status="${subscriptionStatus}"]`))?.focus({ preventScroll: true });
+    window.scrollTo(position.x, position.y);
+  }
+
+  async function quickSkipSubscription(button) {
+    const id = Number(button.dataset.quickSkip);
+    const subscription = state.subscriptions.find((item) => item.id === id);
+    if (!subscription || !canQuickSkip(subscription) || quickSkipPending.has(id)) return;
+    const origin = main.querySelector("#subscriptionResults");
+    const focus = subscriptionFocusSelector(button);
+    quickSkipPending.add(id);
+    beginAction(button);
+    let saved = false;
+    try {
+      await api(`/api/subscriptions/${id}/skip`, { method: "POST", body: { skipped: !subscription.Skipped } });
+      saved = true;
+      await loadFreshState();
+      quickSkipPending.delete(id);
+      syncSummary();
+      if (currentView === "subscriptions" && main.querySelector("#subscriptionResults")) {
+        const position = subscriptionPosition(origin?.isConnected ? focus : null);
+        renderSubscriptionResults();
+        restoreSubscriptionPosition(position);
+      }
+      toast(subscription.Skipped ? "이번 달 결제를 다시 포함했어요." : "이번 달 결제를 건너뛰었어요.");
+    } catch (err) {
+      toast(saved ? "변경은 저장했지만 목록을 불러오지 못했어요. 잠시 후 다시 확인해 주세요." : err.message, true);
+    } finally {
+      quickSkipPending.delete(id);
+      endAction(button);
+      // A filter change can replace the original button while the request is pending.
+      const currentButton = main.querySelector(`[data-quick-skip="${id}"]`);
+      if (currentButton && currentButton !== button) {
+        currentButton.disabled = false;
+        currentButton.removeAttribute("aria-busy");
+      }
+    }
+  }
+
+  function openCancelledSubscription(subscription) {
+    openModal(subscription.ServiceName, "해지된 구독 기록");
+    modalBody.innerHTML = `<dl class="cancelled-subscription-details">
+      <dt>금액 / 주기</dt><dd>${esc(money(subscription.amount, subscription.Currency))} · ${cycle(subscription.BillingCycle)}</dd>
+      <dt>해지일</dt><dd>${esc((subscription.CancelledAt || "").slice(0, 10))}</dd>
+      <dt>카테고리</dt><dd>${esc(subscription.Category || "기타")}</dd>
+      <dt>결제수단</dt><dd>${esc(subscription.PaymentMethodName)}</dd>
+      <dt>메모</dt><dd>${esc(subscription.Memo || "없음")}</dd>
+    </dl>`;
   }
 
   function renderUpcoming() {
@@ -607,14 +731,16 @@
 
   async function loadUpcomingMonth(period) {
     const request = ++upcomingRequest;
+    const generation = stateGeneration;
     try {
       const month = await api(`/api/upcoming?month=${encodeURIComponent(period)}`);
+      if (generation !== stateGeneration) return;
       upcomingMonths.set(period, month);
       if (request === upcomingRequest && currentView === "upcoming" && upcomingView === "calendar" && period === calendarPeriod()) {
         renderUpcomingCalendar();
       }
     } catch (err) {
-      if (request === upcomingRequest) {
+      if (generation === stateGeneration && request === upcomingRequest && currentView === "upcoming" && upcomingView === "calendar" && period === calendarPeriod()) {
         toast(err.message, true);
         document.querySelector(".calendar-loading")?.replaceChildren("결제 일정을 불러오지 못했어요.");
       }
@@ -730,9 +856,13 @@
           money(Math.min(...(selected?.monthlyTotals || [0])), selectedCurrency),
         ),
       ].join("");
+    const projectedTotals = new Map();
+    activeSubs().forEach((subscription) => {
+      projectedTotals.set(subscription.Currency, (projectedTotals.get(subscription.Currency) || 0) + monthlyEstimate(subscription));
+    });
     const statsRows = activeSubs()
       .sort((a, b) => a.Currency.localeCompare(b.Currency) || b.amount - a.amount)
-      .map(subscriptionStatRow)
+      .map((subscription) => subscriptionStatRow(subscription, projectedTotals))
       .join("") || empty("표시할 데이터가 없어요", "구독을 추가하면 분석을 시작해요.");
     const chartTitle = selectedCurrency === "all" ? "통화별 지출 흐름" : deltaText(selected);
 
@@ -782,13 +912,13 @@
       </div>`;
   }
 
-  function subscriptionStatRow(subscription) {
-    const monthly = subscription.BillingCycle === "yearly"
-      ? Math.round(subscription.amount / 12)
-      : subscription.amount;
-    const currencyTotal =
-      (state.stats.currencies || []).find((currency) => currency.currency === subscription.Currency)
-        ?.monthTotal || 0;
+  function monthlyEstimate(subscription) {
+    return subscription.BillingCycle === "yearly" ? Math.round(subscription.amount / 12) : subscription.amount;
+  }
+
+  function subscriptionStatRow(subscription, projectedTotals) {
+    const monthly = monthlyEstimate(subscription);
+    const currencyTotal = projectedTotals.get(subscription.Currency) || 0;
     const ratio = currencyTotal ? Math.round(monthly / currencyTotal * 100) : 0;
 
     return `
@@ -916,165 +1046,172 @@
       </button>`;
   }
 
+  function subscriptionEditorDateValid(value) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value || "")) return false;
+    const date = new Date(`${value}T00:00:00Z`);
+    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+  }
+
+  function subscriptionDraftErrors(values, currencies, methods, retainedMethod = null) {
+    const errors = {};
+    if (!String(values.serviceName || "").trim()) errors.serviceName = "서비스명을 입력해 주세요.";
+    if (!currencies.some((currency) => currency.code === values.currency && !currency.archived)) {
+      errors.currency = "사용할 수 있는 통화를 선택해 주세요. 보관된 통화는 새로 저장할 수 없어요.";
+    }
+    if (amountMinorUnits(values.amount, values.currency) === null) errors.amount = "0 이상의 금액을 통화의 소수 자릿수에 맞게 입력해 주세요.";
+    if (!["monthly", "yearly"].includes(values.billingCycle)) errors.billingCycle = "결제 주기를 선택해 주세요.";
+    if (!subscriptionEditorDateValid(values.billingDate)) errors.billingDate = "올바른 결제일을 선택해 주세요.";
+    if (!methods.some((method) => Number(method.id) === Number(values.paymentMethodId) &&
+      (!method.Archived || Number(method.id) === Number(retainedMethod)))) {
+      errors.paymentMethodId = "사용할 수 있는 결제수단을 선택해 주세요.";
+    }
+    if (values.isTrial) {
+      if (!subscriptionEditorDateValid(values.trialEndsAt)) errors.trialEndsAt = "무료 체험 종료일을 선택해 주세요.";
+      else if (subscriptionEditorDateValid(values.billingDate) && values.billingDate < values.trialEndsAt) {
+        errors.billingDate = "첫 결제일은 무료 체험 종료일 이후여야 해요.";
+      }
+    }
+    return errors;
+  }
+
+  function subscriptionBillingPreview(values) {
+    const amount = amountMinorUnits(values.amount, values.currency);
+    const price = amount === null ? "금액을 입력해 주세요." : `${money(amount, values.currency)} · ${cycle(values.billingCycle)}`;
+    if (!subscriptionEditorDateValid(values.billingDate)) return { price, rule: "결제일을 선택하면 결제 주기를 확인할 수 있어요.", date: "" };
+    const month = Number(values.billingDate.slice(5, 7)), day = Number(values.billingDate.slice(8));
+    const rule = `${values.billingCycle === "yearly" ? `매년 ${month}월 ${day}일` : `매월 ${day}일`}${day >= 29 ? " · 없는 날짜는 월말로 조정" : ""}`;
+    const date = `${values.isTrial ? "설정된 첫 결제일" : "결제 기준일"}: ${values.billingDate.replaceAll("-", ".")}${values.isTrial && subscriptionEditorDateValid(values.trialEndsAt) ? ` · 체험 종료 ${values.trialEndsAt.replaceAll("-", ".")}` : ""}`;
+    return { price, rule, date };
+  }
+
   function openSubForm(service = null, existing = null) {
     const edit = !!existing;
     const s = existing || {
-      ServiceName: service?.Name || "",
-      Icon: service?.Icon || "",
-      Color: service?.Color || "#9AB8A8",
-      Category: service?.Category || "",
-      Currency: service?.Currency || "KRW",
-      BillingCycle: service?.BillingCycle || "monthly",
-      amount: "",
-      BillingDate: localDate(),
-      TrialEndsAt: "",
-      IsTrial: false,
-      PaymentMethodID: visibleMethods()[0]?.id || "",
-      Memo: "",
+      ServiceName: service?.Name || "", Icon: service?.Icon || "", Color: service?.Color || "#D4D4D8",
+      Category: service?.Category || "", Currency: service?.Currency || state.user.Currency || "KRW",
+      BillingCycle: service?.BillingCycle || "monthly", amount: "", BillingDate: localDate(),
+      TrialEndsAt: "", IsTrial: false, PaymentMethodID: visibleMethods()[0]?.id || "", Memo: "",
       ServiceID: service ? Number(service.ID) : null,
     };
-    openModal(
-      edit ? `${s.ServiceName} 수정` : "구독 정보를 알려주세요",
-      edit ? "구독 관리" : "구독 추가 · 2/2",
-    );
+    const currencies = (state.currencies || []).filter((currency) => !currency.archived || (edit && currency.code === s.Currency));
+    const methods = (state.paymentMethods || []).filter((method) => !method.Archived || (edit && Number(method.id) === Number(s.PaymentMethodID)));
+    openModal(edit ? `${s.ServiceName} 수정` : "구독 정보를 알려주세요", edit ? "구독 관리" : "구독 추가 · 2/2");
     modal.classList.add("wide", "subscription-modal");
-    modalBody.innerHTML = `<form id="subscriptionForm"><div class="field-grid">
-      <label class="field wide"><span>서비스명 *</span><input name="serviceName" required maxlength="80" value="${
-      esc(s.ServiceName)
-    }"></label>
-      <label class="field"><span>금액 *</span><input name="amount" required type="number" min="0" step="${
-      1 / (10 ** currencyDigits(s.Currency))
-    }" inputmode="decimal" value="${amountValue(s.amount, s.Currency)}" placeholder="14900"></label>
-      <label class="field"><span>통화 *</span><select name="currency">${
-      visibleCurrencies().map((c) =>
-        `<option value="${esc(c.code)}" ${s.Currency === c.code ? "selected" : ""}>${esc(c.code)}${
-          c.name && c.name !== c.code ? " · " + esc(c.name) : ""
-        }</option>`
-      ).join("")
-    }</select></label>
-      <label class="field"><span>결제 주기 *</span><select name="billingCycle"><option value="monthly" ${
-      s.BillingCycle === "monthly" ? "selected" : ""
-    }>매월</option><option value="yearly" ${
-      s.BillingCycle === "yearly" ? "selected" : ""
-    }>매년</option></select></label>
-      <label class="field"><span id="billingDateLabel">${
-      s.TrialEndsAt ? "첫 결제일" : "결제일"
-    } *</span><input name="billingDate" required type="date" value="${
-      esc(s.BillingDate || s.NextPayment || localDate())
-    }"></label>
-      <label class="field"><span>결제수단 *</span><select name="paymentMethodId">${
-      visibleMethods().map((p) =>
-        `<option value="${p.id}" ${Number(s.PaymentMethodID) === Number(p.id) ? "selected" : ""}>${
-          esc(p.name)
-        }</option>`
-      ).join("")
-    }</select></label><details class="optional-fields wide"><summary>추가 옵션</summary><div class="optional-fields-body">
-      <label class="check-row trial-toggle"><span>무료 체험 사용${
-      service?.SupportsTrial ? " · 이 서비스에서 지원해요" : ""
-    }</span><span class="switch"><input name="isTrial" type="checkbox" ${
-      s.TrialEndsAt ? "checked" : ""
-    }><span></span></span></label>
-      <label class="field wide" id="trialEndField" ${
-      s.TrialEndsAt ? "" : "hidden"
-    }><span>무료 체험 종료일 *</span><input name="trialEndsAt" type="date" value="${
-      esc(s.TrialEndsAt || "")
-    }"><p class="help">첫 결제일 전까지 구독비에 포함하지 않아요.</p></label>
-      <label class="field"><span>카테고리</span><input name="category" maxlength="40" value="${
-      esc(s.Category)
-    }" placeholder="음악, AI, 영상"></label>
-      <label class="field"><span>메모</span><textarea name="memo" maxlength="500" placeholder="함께 사용하는 사람이나 플랜을 적어두세요.">${
-      esc(s.Memo)
-    }</textarea></label></div></details>
-    </div><div class="form-error" id="formError"></div></form>
-    ${
-      edit
-        ? `<div class="edit-actions"><button class="button skip-action ${
-          s.Skipped ? "restore" : ""
-        }" type="button" id="skipSub">${
-          s.Skipped ? "이번 결제 다시 포함" : "이번 결제 건너뛰기"
-        }</button><button class="button danger" type="button" id="cancelSub">구독 해지</button></div>`
-        : ""
-    }`;
-    modalFooter.innerHTML = `<div class="form-actions subscription-form-actions">${
-      !edit ? '<button class="button ghost left" type="button" id="backToPicker">이전</button>' : ""
-    }<button class="button primary" form="subscriptionForm" type="submit">${
-      edit ? "변경 저장" : "구독 추가"
-    }</button></div>`;
-    document.querySelector("#backToPicker")?.addEventListener("click", openServicePicker);
-    const trialToggle = document.querySelector('[name="isTrial"]');
-    const syncTrial = () => {
-      const enabled = trialToggle.checked;
-      document.querySelector("#trialEndField").hidden = !enabled;
-      document.querySelector('[name="trialEndsAt"]').required = enabled;
-      document.querySelector("#billingDateLabel").textContent = enabled
-        ? "첫 결제일 *"
-        : "결제일 *";
+    modalBody.innerHTML = `<form id="subscriptionForm" novalidate><div class="field-grid">
+      <label class="field wide"><span>서비스명 *</span><input name="serviceName" required maxlength="80" value="${esc(s.ServiceName)}"></label>
+      <label class="field"><span>금액 *</span><input name="amount" required type="number" min="0" step="${1 / (10 ** currencyDigits(s.Currency))}" inputmode="decimal" value="${s.amount === "" ? "" : amountValue(s.amount, s.Currency)}" placeholder="14900"></label>
+      <label class="field"><span>통화 *</span><select name="currency">${currencies.map((currency) => `<option value="${esc(currency.code)}" ${s.Currency === currency.code ? "selected" : ""}>${esc(currency.code)}${currency.archived ? " · 보관됨 (변경 필요)" : currency.name && currency.name !== currency.code ? " · " + esc(currency.name) : ""}</option>`).join("")}</select></label>
+      <label class="field"><span>결제 주기 *</span><select name="billingCycle"><option value="monthly" ${s.BillingCycle === "monthly" ? "selected" : ""}>매월</option><option value="yearly" ${s.BillingCycle === "yearly" ? "selected" : ""}>매년</option></select></label>
+      <label class="field"><span id="billingDateLabel">${s.TrialEndsAt ? "첫 결제일" : "결제일"} *</span><input name="billingDate" required type="date" value="${esc((s.BillingDate || s.NextPayment || localDate()).slice(0, 10))}"></label>
+      <label class="field"><span>결제수단 *</span><select name="paymentMethodId">${methods.map((method) => `<option value="${method.id}" ${Number(s.PaymentMethodID) === Number(method.id) ? "selected" : ""}>${esc(method.name)}${method.Archived ? " · 보관됨 (현재 구독에서 유지 가능)" : ""}</option>`).join("")}</select></label>
+      <div class="subscription-form-preview wide" id="subscriptionPreview" role="status" aria-live="polite" aria-atomic="true"></div>
+      <details class="optional-fields wide" ${s.TrialEndsAt || s.Memo ? "open" : ""}><summary id="subscriptionOptionalSummary">추가 옵션</summary><div class="optional-fields-body">
+        <label class="check-row trial-toggle"><span>무료 체험 사용${service?.SupportsTrial ? " · 이 서비스에서 지원해요" : ""}</span><span class="switch"><input name="isTrial" type="checkbox" ${s.TrialEndsAt ? "checked" : ""}><span></span></span></label>
+        <label class="field wide" id="trialEndField" ${s.TrialEndsAt ? "" : "hidden"}><span>무료 체험 종료일 *</span><input name="trialEndsAt" type="date" value="${esc((s.TrialEndsAt || "").slice(0, 10))}"><p class="help">첫 결제일 전까지 구독비에 포함하지 않아요.</p></label>
+        <label class="field"><span>카테고리</span><input name="category" maxlength="40" value="${esc(s.Category)}" placeholder="음악, AI, 영상"></label>
+        <label class="field"><span>메모</span><textarea name="memo" maxlength="500" placeholder="함께 사용하는 사람이나 플랜을 적어두세요.">${esc(s.Memo)}</textarea></label>
+      </div></details>
+    </div><div class="form-error" id="formError" role="alert"></div></form>
+    ${edit ? `<div class="edit-actions">${canQuickSkip(s) ? `<button class="button skip-action ${s.Skipped ? "restore" : ""}" type="button" id="skipSub">${s.Skipped ? "이번 달 결제 다시 포함" : "이번 달 결제 건너뛰기"}</button>` : ""}<button class="button danger" type="button" id="cancelSub">구독 해지</button></div>` : ""}`;
+    modalFooter.innerHTML = `<div class="form-actions subscription-form-actions">${!edit ? '<button class="button ghost left" type="button" id="backToPicker">이전</button>' : ""}<button class="button primary" form="subscriptionForm" type="submit">${edit ? "변경 저장" : "구독 추가"}</button></div>`;
+    const form = modalBody.querySelector("#subscriptionForm"), error = form.querySelector("#formError");
+    const fieldNames = ["serviceName", "amount", "currency", "billingCycle", "billingDate", "paymentMethodId", "trialEndsAt"];
+    for (const name of fieldNames) {
+      const control = form.elements.namedItem(name), message = document.createElement("small");
+      message.id = `subscription-${name}-error`;
+      message.className = "field-error";
+      message.setAttribute("aria-live", "polite");
+      control.setAttribute("aria-describedby", message.id);
+      control.closest(".field").append(message);
+    }
+    const readDraft = () => {
+      const values = Object.fromEntries(new FormData(form));
+      values.isTrial = form.elements.namedItem("isTrial").checked;
+      return values;
     };
-    trialToggle.addEventListener("change", syncTrial);
-    syncTrial();
-    const currencySelect = document.querySelector('[name="currency"]'),
-      amountInput = document.querySelector('[name="amount"]');
-    currencySelect.addEventListener("change", () => {
-      amountInput.step = String(1 / (10 ** currencyDigits(currencySelect.value)));
-    });
-    document.querySelector("#subscriptionForm").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const f = new FormData(e.currentTarget),
-        amount = amountMinorUnits(f.get("amount"), f.get("currency"));
-      if (amount === null) {
-        document.querySelector("#formError").textContent =
-          "통화의 소수 자릿수에 맞게 금액을 입력해 주세요.";
+    let submitted = false, pending = false;
+    const showErrors = (errors, focus = false) => {
+      for (const name of fieldNames) {
+        const control = form.elements.namedItem(name);
+        control.setAttribute("aria-invalid", errors[name] ? "true" : "false");
+        form.querySelector(`#subscription-${name}-error`).textContent = errors[name] || "";
+      }
+      if (focus) {
+        const name = fieldNames.find((field) => errors[field]);
+        const control = name && form.elements.namedItem(name);
+        if (control) {
+          const details = control.closest("details");
+          if (details) details.open = true;
+          control.focus();
+        }
+      }
+    };
+    const syncDraft = () => {
+      const values = readDraft(), enabled = values.isTrial;
+      form.querySelector("#trialEndField").hidden = !enabled;
+      form.elements.namedItem("trialEndsAt").required = enabled;
+      form.querySelector("#billingDateLabel").textContent = enabled ? "첫 결제일 *" : "결제일 *";
+      form.elements.namedItem("amount").step = String(1 / (10 ** currencyDigits(values.currency)));
+      const options = [enabled && "무료 체험", String(values.category || "").trim() && "카테고리", String(values.memo || "").trim() && "메모"].filter(Boolean);
+      form.querySelector("#subscriptionOptionalSummary").textContent = `추가 옵션${options.length ? " · " + options.join(" · ") : ""}`;
+      const preview = subscriptionBillingPreview(values);
+      form.querySelector("#subscriptionPreview").innerHTML = `<strong>${esc(preview.price)}</strong><span>${esc(preview.rule)}</span>${preview.date ? `<span>${esc(preview.date)}</span>` : ""}`;
+      if (submitted) showErrors(subscriptionDraftErrors(values, state.currencies || [], state.paymentMethods || [], edit ? s.PaymentMethodID : null));
+    };
+    form.addEventListener("input", syncDraft);
+    form.addEventListener("change", syncDraft);
+    syncDraft();
+    // Surface a retained inactive currency immediately instead of silently selecting another.
+    if (edit && currencies.find((currency) => currency.code === s.Currency)?.archived) {
+      submitted = true;
+      showErrors({ currency: "이 통화는 보관되어 있어요. 저장하려면 사용 가능한 통화를 선택해 주세요." });
+    }
+    modalBody.querySelector("#backToPicker")?.addEventListener("click", openServicePicker);
+    modalFooter.querySelector("#backToPicker")?.addEventListener("click", openServicePicker);
+    const editorControls = () => [...form.querySelectorAll("input, select, textarea"), ...modalBody.querySelectorAll(".edit-actions button"), ...modalFooter.querySelectorAll("button")];
+    const runMutation = async (operation, message) => {
+      if (pending || !beginAction(form)) return;
+      pending = true;
+      const controls = editorControls().map((control) => [control, control.disabled]);
+      controls.forEach(([control]) => { control.disabled = true; });
+      error.textContent = "";
+      try {
+        await operation();
+        if (form.isConnected) closeModal();
+        toast(message);
+        try { await refresh(); }
+        catch { toast("저장은 완료했지만 목록을 새로고침하지 못했어요. 화면을 새로고침해 주세요.", true); }
+      } catch (err) {
+        showFormError(error, err.message);
+      } finally {
+        controls.forEach(([control, disabled]) => { control.disabled = disabled; });
+        endAction(form);
+        pending = false;
+      }
+    };
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (pending) return;
+      submitted = true;
+      const values = readDraft(), errors = subscriptionDraftErrors(values, state.currencies || [], state.paymentMethods || [], edit ? s.PaymentMethodID : null);
+      showErrors(errors, true);
+      if (Object.keys(errors).length) {
+        error.textContent = "입력 항목을 확인해 주세요.";
         return;
       }
       const body = {
-        serviceId: edit ? s.ServiceID : (service ? Number(service.ID) : null),
-        serviceName: f.get("serviceName"),
-        icon: s.Icon || String(f.get("serviceName")).slice(0, 1).toUpperCase(),
-        color: s.Color || "#9AB8A8",
-        amount,
-        currency: f.get("currency"),
-        billingCycle: f.get("billingCycle"),
-        billingDate: f.get("billingDate"),
-        trialEndsAt: f.has("isTrial") ? f.get("trialEndsAt") : "",
-        paymentMethodId: Number(f.get("paymentMethodId")),
-        category: f.get("category"),
-        memo: f.get("memo"),
+        serviceId: edit ? s.ServiceID : service ? Number(service.ID) : null,
+        serviceName: values.serviceName, icon: s.Icon || String(values.serviceName).slice(0, 1).toUpperCase(), color: s.Color || "#D4D4D8",
+        amount: amountMinorUnits(values.amount, values.currency), currency: values.currency, billingCycle: values.billingCycle,
+        billingDate: values.billingDate, trialEndsAt: values.isTrial ? values.trialEndsAt : "", paymentMethodId: Number(values.paymentMethodId),
+        category: values.category, memo: values.memo,
       };
-      try {
-        await api(edit ? `/api/subscriptions/${s.id}` : "/api/subscriptions", {
-          method: edit ? "PUT" : "POST",
-          body,
-        });
-        closeModal();
-        await refresh();
-        toast(edit ? "구독 정보를 바꿨어요." : "새 구독을 추가했어요.");
-      } catch (err) {
-        document.querySelector("#formError").textContent = err.message;
-      }
+      await runMutation(() => api(edit ? `/api/subscriptions/${s.id}` : "/api/subscriptions", { method: edit ? "PUT" : "POST", body }), edit ? "구독 정보를 바꿨어요." : "새 구독을 추가했어요.");
     });
-    document.querySelector("#skipSub")?.addEventListener("click", async () => {
-      try {
-        await api(`/api/subscriptions/${s.id}/skip`, {
-          method: "POST",
-          body: { skipped: !s.Skipped },
-        });
-        closeModal();
-        await refresh();
-        toast(s.Skipped ? "이번 결제를 다시 포함했어요." : "이번 결제만 건너뛰었어요.");
-      } catch (err) {
-        toast(err.message, true);
-      }
-    });
-    document.querySelector("#cancelSub")?.addEventListener("click", async () => {
-      if (!confirm(`${s.ServiceName} 구독을 해지할까요? 과거 기록은 그대로 남아요.`)) return;
-      try {
-        await api(`/api/subscriptions/${s.id}/cancel`, { method: "POST", body: {} });
-        closeModal();
-        await refresh();
-        toast("구독을 해지했어요.");
-      } catch (err) {
-        toast(err.message, true);
-      }
+    modalBody.querySelector("#skipSub")?.addEventListener("click", () => runMutation(() => api(`/api/subscriptions/${s.id}/skip`, { method: "POST", body: { skipped: !s.Skipped } }), s.Skipped ? "이번 결제를 다시 포함했어요." : "이번 결제만 건너뛰었어요."));
+    modalBody.querySelector("#cancelSub")?.addEventListener("click", () => {
+      if (pending || !confirm(`${s.ServiceName} 구독을 해지할까요? 과거 기록은 그대로 남아요.`)) return;
+      return runMutation(() => api(`/api/subscriptions/${s.id}/cancel`, { method: "POST", body: {} }), "구독을 해지했어요.");
     });
   }
 
@@ -1210,10 +1347,6 @@
     return `
       <section class="settings-section" data-section="notifications">
         ${notificationToggle("notifyUpcoming", "결제 예정 알림", state.settings.NotifyUpcoming)}
-        ${
-      notificationToggle("notifyChanges", "구독 추가·변경·해지 알림", state.settings.NotifyChanges)
-    }
-        ${notificationToggle("notifyMonthly", "월간 요약", state.settings.NotifyMonthly)}
         <label class="field">
           <span>결제 며칠 전에 알릴까요?</span>
           <input
@@ -1246,7 +1379,7 @@
       <section class="settings-section" data-section="channels">
         <section class="integration-option">
           ${integrationToggle("discordEnabled", "Discord", discordEnabled)}
-          ${discordEnabled ? `
+          <div class="integration-fields" data-integration-fields="discordEnabled" ${discordEnabled ? "" : "hidden"}>
             <label class="field">
               <span>Webhook URL</span>
               <input
@@ -1258,11 +1391,11 @@
             </label>
             <div class="form-actions">
               <button class="button ghost" type="button" data-test="discord">Discord 테스트</button>
-            </div>` : ""}
+            </div></div>
         </section>
         <section class="integration-option">
           ${integrationToggle("telegramEnabled", "Telegram", telegramEnabled)}
-          ${telegramEnabled ? `
+          <div class="integration-fields" data-integration-fields="telegramEnabled" ${telegramEnabled ? "" : "hidden"}>
             <div class="field-grid">
               <label class="field wide">
                 <span>Bot Token</span>
@@ -1280,15 +1413,16 @@
             </div>
             <div class="form-actions">
               <button class="button ghost" type="button" data-test="telegram">Telegram 테스트</button>
-            </div>` : ""}
+            </div></div>
         </section>
         <section class="integration-option pwa-option">
-          <div>
-            ${integrationToggle("pwaEnabled", "PWA", pwaEnabled)}
+          ${integrationToggle("pwaEnabled", "PWA", pwaEnabled)}
+          <div class="integration-fields pwa-content" data-integration-fields="pwaEnabled" ${pwaEnabled ? "" : "hidden"}>
+          <div class="pwa-description">
             <p class="help">SubManager를 앱처럼 설치해 빠르게 열고, 기기 푸시로 결제 예정 알림을 받을 수 있어요.</p>
             <p class="help">브라우저 메뉴에서 “홈 화면에 추가”를 선택해 설치할 수 있어요.</p>
           </div>
-          ${pwaEnabled ? `<div class="pwa-actions">
+          <div class="pwa-actions">
             ${pwaInstalled()
               ? '<p class="help">이 기기에 이미 설치되어 있어요.</p>'
               : deferredInstallPrompt
@@ -1297,7 +1431,8 @@
             ${pwaPushSupported()
               ? '<button class="button ghost" type="button" id="enablePWAPush">이 기기의 푸시 알림 켜기</button><button class="button ghost" type="button" id="disablePWAPush">이 기기의 푸시 알림 끄기</button><button class="button ghost" type="button" data-test="pwa">PWA 테스트</button>'
               : '<p class="help">푸시 알림은 HTTPS에서 지원하는 브라우저로 열어 주세요.</p>'}
-          </div>` : ""}
+          </div>
+          </div>
         </section>
       </section>`;
   }
@@ -1530,6 +1665,28 @@
         ${action}
       </div>`;
   }
+  const pendingActions = new WeakMap();
+  function beginAction(element) {
+    if (pendingActions.has(element)) return false;
+    const controls = element.tagName === "FORM"
+      ? [...element.querySelectorAll('button[type="submit"], input[type="submit"]'),
+        ...document.querySelectorAll(`button[form="${element.id}"][type="submit"]`)]
+      : [element];
+    pendingActions.set(element, controls.map((control) => [control, control.disabled]));
+    controls.forEach((control) => { control.disabled = true; });
+    element.setAttribute("aria-busy", "true");
+    return true;
+  }
+  function endAction(element) {
+    (pendingActions.get(element) || []).forEach(([control, disabled]) => { control.disabled = disabled; });
+    pendingActions.delete(element);
+    element.removeAttribute("aria-busy");
+  }
+  function showFormError(error, message) {
+    if (error?.isConnected) error.textContent = message;
+    else toast(message, true);
+  }
+
   function bindSettings() {
     const saveArea = document.querySelector("#settingsSaveArea");
     const tabsUsingSettingsSave = new Set(["profile", "notifications", "channels"]);
@@ -1547,56 +1704,74 @@
     );
     document.querySelector("#settingsForm").addEventListener("submit", async (e) => {
       e.preventDefault();
-      const f = new FormData(e.currentTarget);
+      const form = e.currentTarget;
+      const error = form.querySelector("#settingsError");
+      const f = new FormData(form);
       const body = {
         name: f.get("name"),
         currency: f.get("currency"),
         discordEnabled: f.has("discordEnabled"),
-        discordWebhook: f.has("discordEnabled") ? f.get("discordWebhook") : state.settings.DiscordWebhook,
+        discordWebhook: form.elements.discordWebhook.value,
         telegramEnabled: f.has("telegramEnabled"),
-        telegramBotToken: f.has("telegramEnabled") ? f.get("telegramBotToken") : state.settings.TelegramBotToken,
-        telegramChatId: f.has("telegramEnabled") ? f.get("telegramChatId") : state.settings.TelegramChatID,
+        telegramBotToken: form.elements.telegramBotToken.value,
+        telegramChatId: form.elements.telegramChatId.value,
         pwaEnabled: f.has("pwaEnabled"),
         notifyDays: Number(f.get("notifyDays")),
         notifyUpcoming: f.has("notifyUpcoming"),
-        notifyChanges: f.has("notifyChanges"),
-        notifyMonthly: f.has("notifyMonthly"),
+        notifyChanges: state.settings.NotifyChanges,
+        notifyMonthly: state.settings.NotifyMonthly,
       };
+      if (!beginAction(form)) return;
+      error.textContent = "";
       try {
         await api("/api/settings", { method: "PUT", body });
-        closeModal();
+        if (form.isConnected) closeModal();
         await refresh();
         toast("설정을 저장했어요.");
       } catch (err) {
-        document.querySelector("#settingsError").textContent = err.message;
+        showFormError(error, err.message);
+      } finally {
+        endAction(form);
       }
     });
+    bindAccountSettings();
+    bindCatalogSettings();
+    bindIntegrationSettings();
+    bindDataSettings();
+  }
+
+  function bindAccountSettings() {
     document.querySelector("#emailChangeForm").addEventListener("submit", async (e) => {
       e.preventDefault();
-      const f = new FormData(e.currentTarget),
-        error = e.currentTarget.querySelector(".form-error"),
+      const form = e.currentTarget;
+      const f = new FormData(form),
+        error = form.querySelector(".form-error"),
         email = String(f.get("email")).trim();
       error.textContent = "";
       if (!email || !f.get("currentPassword")) {
         error.textContent = "이메일과 현재 비밀번호를 입력해 주세요.";
         return;
       }
+      if (!beginAction(form)) return;
       try {
         await api("/api/account/email", {
           method: "PUT",
           body: { email, currentPassword: f.get("currentPassword") },
         });
         state.user.Email = email.toLowerCase();
-        e.currentTarget.elements.currentPassword.value = "";
+        form.elements.currentPassword.value = "";
         toast("로그인 이메일을 변경했어요.");
       } catch (err) {
-        error.textContent = err.message;
+        showFormError(error, err.message);
+      } finally {
+        endAction(form);
       }
     });
     document.querySelector("#passwordChangeForm").addEventListener("submit", async (e) => {
       e.preventDefault();
-      const f = new FormData(e.currentTarget),
-        error = e.currentTarget.querySelector(".form-error"),
+      const form = e.currentTarget;
+      const f = new FormData(form),
+        error = form.querySelector(".form-error"),
         currentPassword = String(f.get("currentPassword")),
         newPassword = String(f.get("newPassword")),
         confirmPassword = String(f.get("confirmPassword"));
@@ -1609,17 +1784,23 @@
         error.textContent = "새 비밀번호 확인이 일치하지 않아요.";
         return;
       }
+      if (!beginAction(form)) return;
       try {
         await api("/api/account/password", {
           method: "PUT",
           body: { currentPassword, newPassword },
         });
-        e.currentTarget.reset();
+        form.reset();
         toast("비밀번호를 변경했어요. 다른 기기에서는 다시 로그인해 주세요.");
       } catch (err) {
-        error.textContent = err.message;
+        showFormError(error, err.message);
+      } finally {
+        endAction(form);
       }
     });
+  }
+
+  function bindCatalogSettings() {
     document.querySelector("#addMethod").addEventListener("click", async () => {
       const input = document.querySelector("#newMethod");
       try {
@@ -1680,6 +1861,9 @@
         }
       })
     );
+  }
+
+  function bindIntegrationSettings() {
     document.querySelectorAll("[data-test]").forEach((b) =>
       b.addEventListener("click", async () => {
         const f = new FormData(document.querySelector("#settingsForm"));
@@ -1689,27 +1873,24 @@
           body.telegramBotToken = f.get("telegramBotToken") || "";
           body.telegramChatId = f.get("telegramChatId") || "";
         }
+        if (!beginAction(b)) return;
         try {
           await api("/api/notifications/test", { method: "POST", body });
           toast("SubManager 알림 테스트를 보냈어요.");
         } catch (err) {
           toast(err.message, true);
+        } finally {
+          endAction(b);
         }
       })
     );
     document.querySelectorAll("input[name=discordEnabled], input[name=telegramEnabled], input[name=pwaEnabled]").forEach((input) =>
       input.addEventListener("change", () => {
-        const openTab = "channels";
-        const form = document.querySelector("#settingsForm");
-        const values = new FormData(form);
-        if (input.name === "discordEnabled") state.settings.DiscordEnabled = input.checked;
-        if (input.name === "telegramEnabled") state.settings.TelegramEnabled = input.checked;
-        if (input.name === "pwaEnabled") state.settings.PWAEnabled = input.checked;
-        if (input.name === "discordEnabled" && values.has("discordWebhook")) state.settings.DiscordWebhook = values.get("discordWebhook");
-        if (input.name === "telegramEnabled" && values.has("telegramBotToken")) state.settings.TelegramBotToken = values.get("telegramBotToken");
-        if (input.name === "telegramEnabled" && values.has("telegramChatId")) state.settings.TelegramChatID = values.get("telegramChatId");
-        openSettings();
-        document.querySelector(`[data-tab="${openTab}"]`)?.click();
+        const fields = modalBody.querySelector(`[data-integration-fields="${input.name}"]`);
+        if (fields) {
+          fields.hidden = !input.checked;
+          fields.querySelectorAll("input").forEach((field) => { field.disabled = !input.checked; });
+        }
       })
     );
     document.querySelector("#installPWA")?.addEventListener("click", async () => {
@@ -1763,6 +1944,9 @@
         toast(err.message || "PWA 푸시 알림을 끄지 못했어요.", true);
       }
     });
+  }
+
+  function bindDataSettings() {
     document.querySelector("#logoutButton").addEventListener("click", async () => {
       try {
         await api("/auth/logout", { method: "POST", body: {} });
@@ -1822,7 +2006,7 @@
     });
   }
   async function reloadAndSettings(tab) {
-    replaceState(await api("/api/state"));
+    await loadFreshState();
     openSettings();
     document.querySelector(`[data-tab="${tab}"]`)?.click();
   }
@@ -1834,10 +2018,13 @@
       opts.body = JSON.stringify(body);
     }
     const res = await fetch(url, opts);
-    let data = {};
+    let data;
     try {
       data = await res.json();
-    } catch {}
+    } catch {
+      if (res.status === 401) location.replace("/");
+      throw new Error("서버 응답을 읽지 못했어요. 잠시 후 다시 시도해 주세요.");
+    }
     if (res.status === 401) {
       location.replace("/");
       throw new Error("로그인이 필요해요");
@@ -1845,10 +2032,16 @@
     if (!res.ok) throw new Error(data.error || "요청을 처리하지 못했어요.");
     return data;
   }
+  async function loadFreshState() {
+    const request = ++stateRequest;
+    const nextState = await api("/api/state");
+    if (request === stateRequest) replaceState(nextState);
+  }
   async function refresh() {
-    replaceState(await api("/api/state"));
-    upcomingMonths.clear();
+    await loadFreshState();
+    const position = currentView === "subscriptions" ? subscriptionPosition() : null;
     render();
+    if (position) restoreSubscriptionPosition(position);
   }
   function toast(message, error = false) {
     const el = document.createElement("div");
@@ -1859,6 +2052,30 @@
   }
 
   document.addEventListener("click", (e) => {
+    if (e.target.closest("[data-reset-subscription-filters]")) {
+      subscriptionQuery = "";
+      subscriptionCategory = "";
+      subscriptionStatus = "active";
+      renderSubscriptions();
+      main.querySelector("#subscriptionSearch")?.focus({ preventScroll: true });
+      return;
+    }
+    const quickSkip = e.target.closest("[data-quick-skip]");
+    if (quickSkip) {
+      quickSkipSubscription(quickSkip);
+      return;
+    }
+    const status = e.target.closest("[data-sub-status]");
+    if (status) {
+      subscriptionStatus = status.dataset.subStatus;
+      document.querySelectorAll("[data-sub-status]").forEach((button) => button.setAttribute("aria-pressed", String(button === status)));
+      renderSubscriptionResults();
+      return;
+    }
+    if (e.target.closest("[data-add-subscription]")) {
+      openServicePicker();
+      return;
+    }
     if (e.target.closest("[data-export-ics]")) {
       openICSExport();
       return;
@@ -1904,6 +2121,7 @@
       e.stopPropagation();
       selectedCurrency = currency.dataset.currency;
       render(currentView);
+      main.querySelector(`[data-currency="${CSS.escape(selectedCurrency)}"]`)?.focus({ preventScroll: true });
       return;
     }
     const view = e.target.closest("[data-view]");
@@ -1914,7 +2132,7 @@
     const edit = e.target.closest("[data-edit-sub]");
     if (edit) {
       const s = state.subscriptions.find((x) => x.id === Number(edit.dataset.editSub));
-      if (s) openSubForm(null, s);
+      if (s) s.Status === "cancelled" ? openCancelledSubscription(s) : openSubForm(null, s);
       return;
     }
     const pick = e.target.closest("[data-service]");
@@ -1926,6 +2144,12 @@
       return;
     }
     if (e.target.closest("[data-close-modal]")) closeModal();
+  });
+  document.addEventListener("change", (e) => {
+    if (e.target.matches("#subscriptionSort")) {
+      subscriptionSort = e.target.value;
+      renderSubscriptionResults();
+    }
   });
   document.addEventListener("input", (e) => {
     if (e.target.matches("#subscriptionSearch")) {

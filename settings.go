@@ -41,8 +41,14 @@ func (a *application) updateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v.Currency = strings.ToUpper(strings.TrimSpace(v.Currency))
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	defer tx.Rollback()
 	var currencyCount int
-	if err := a.db.QueryRow(`SELECT COUNT(*) FROM currencies WHERE code=? AND archived=0`, v.Currency).Scan(&currencyCount); err != nil {
+	if err := tx.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM currencies WHERE code=? AND archived=0`, v.Currency).Scan(&currencyCount); err != nil {
 		a.fail(w, err)
 		return
 	}
@@ -50,17 +56,11 @@ func (a *application) updateSettings(w http.ResponseWriter, r *http.Request) {
 		bad(w, "기본 통화를 확인해 주세요")
 		return
 	}
-	tx, err := a.db.Begin()
-	if err != nil {
-		a.fail(w, err)
-		return
-	}
-	defer tx.Rollback()
-	if _, err = tx.Exec(`UPDATE users SET name=?,currency=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, v.Name, v.Currency); err == nil {
-		_, err = tx.Exec(`UPDATE notification_channels SET discord_webhook=?,discord_enabled=?,telegram_bot_token=?,telegram_chat_id=?,telegram_enabled=?,pwa_enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, strings.TrimSpace(v.DiscordWebhook), v.DiscordEnabled, strings.TrimSpace(v.TelegramBotToken), strings.TrimSpace(v.TelegramChatID), v.TelegramEnabled, v.PWAEnabled)
+	if _, err = tx.ExecContext(r.Context(), `UPDATE users SET name=?,currency=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, v.Name, v.Currency); err == nil {
+		_, err = tx.ExecContext(r.Context(), `UPDATE notification_channels SET discord_webhook=?,discord_enabled=?,telegram_bot_token=?,telegram_chat_id=?,telegram_enabled=?,pwa_enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, strings.TrimSpace(v.DiscordWebhook), v.DiscordEnabled, strings.TrimSpace(v.TelegramBotToken), strings.TrimSpace(v.TelegramChatID), v.TelegramEnabled, v.PWAEnabled)
 	}
 	if err == nil {
-		_, err = tx.Exec(`UPDATE notification_rules SET notify_upcoming=?,notify_changes=?,notify_monthly=?,days_before=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, v.NotifyUpcoming, v.NotifyChanges, v.NotifyMonthly, v.NotifyDays)
+		_, err = tx.ExecContext(r.Context(), `UPDATE notification_rules SET notify_upcoming=?,notify_changes=?,notify_monthly=?,days_before=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`, v.NotifyUpcoming, v.NotifyChanges, v.NotifyMonthly, v.NotifyDays)
 	}
 	if err != nil {
 		a.fail(w, err)
@@ -177,7 +177,7 @@ func (a *application) createPaymentMethod(w http.ResponseWriter, r *http.Request
 		bad(w, "결제수단 이름을 입력해 주세요")
 		return
 	}
-	res, err := a.db.Exec(`INSERT INTO payment_methods(name,type,is_builtin) VALUES(?,'custom',0)`, v.Name)
+	res, err := a.db.ExecContext(r.Context(), `INSERT INTO payment_methods(name,type,is_builtin) VALUES(?,'custom',0)`, v.Name)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			bad(w, "이미 같은 결제수단이 있어요")
@@ -194,9 +194,7 @@ func (a *application) updatePaymentMethod(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	var v struct {
-		Name string
-	}
+	var v struct{ Name string }
 	if !decode(w, r, &v) {
 		return
 	}
@@ -205,7 +203,22 @@ func (a *application) updatePaymentMethod(w http.ResponseWriter, r *http.Request
 		bad(w, "이름을 입력해 주세요")
 		return
 	}
-	res, err := a.db.Exec(`UPDATE payment_methods SET name=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND is_builtin=0 AND archived=0`, v.Name, id)
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var builtin bool
+	if err := tx.QueryRowContext(r.Context(), `SELECT is_builtin FROM payment_methods WHERE id=? AND archived=0`, id).Scan(&builtin); err != nil {
+		notFoundOrFail(a, w, err)
+		return
+	}
+	if builtin {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "기본 결제수단은 변경할 수 없어요"})
+		return
+	}
+	res, err := tx.ExecContext(r.Context(), `UPDATE payment_methods SET name=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`, v.Name, id)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			bad(w, "이미 같은 결제수단이 있어요")
@@ -214,26 +227,49 @@ func (a *application) updatePaymentMethod(w http.ResponseWriter, r *http.Request
 		a.fail(w, err)
 		return
 	}
+	if err := tx.Commit(); err != nil {
+		a.fail(w, err)
+		return
+	}
 	changed(w, res)
 }
+
 func (a *application) deletePaymentMethod(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
 		return
 	}
-	var used int
-	if err := a.db.QueryRow(`SELECT COUNT(*) FROM subscriptions WHERE payment_method_id=?`, id).Scan(&used); err != nil {
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var builtin bool
+	if err := tx.QueryRowContext(r.Context(), `SELECT is_builtin FROM payment_methods WHERE id=? AND archived=0`, id).Scan(&builtin); err != nil {
+		notFoundOrFail(a, w, err)
+		return
+	}
+	if builtin {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "기본 결제수단은 삭제할 수 없어요"})
+		return
+	}
+	var used bool
+	if err := tx.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM subscriptions WHERE payment_method_id=?)`, id).Scan(&used); err != nil {
 		a.fail(w, err)
 		return
 	}
 	var res sql.Result
-	var err error
-	if used > 0 {
-		res, err = a.db.Exec(`UPDATE payment_methods SET archived=1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND is_builtin=0`, id)
+	if used {
+		res, err = tx.ExecContext(r.Context(), `UPDATE payment_methods SET archived=1,updated_at=CURRENT_TIMESTAMP WHERE id=?`, id)
 	} else {
-		res, err = a.db.Exec(`DELETE FROM payment_methods WHERE id=? AND is_builtin=0`, id)
+		res, err = tx.ExecContext(r.Context(), `DELETE FROM payment_methods WHERE id=?`, id)
 	}
 	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
 		a.fail(w, err)
 		return
 	}
@@ -254,7 +290,7 @@ func (a *application) createCurrency(w http.ResponseWriter, r *http.Request) {
 		bad(w, "통화 코드는 영문 3자리로 입력해 주세요")
 		return
 	}
-	res, err := a.db.Exec(`INSERT INTO currencies(code,name,is_builtin) VALUES(?,?,0)`, v.Code, v.Code)
+	res, err := a.db.ExecContext(r.Context(), `INSERT INTO currencies(code,name,is_builtin) VALUES(?,?,0)`, v.Code, v.Code)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			bad(w, "이미 등록된 통화예요")
@@ -272,9 +308,15 @@ func (a *application) deleteCurrency(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	defer tx.Rollback()
 	var code string
 	var builtin bool
-	if err := a.db.QueryRow(`SELECT code,is_builtin FROM currencies WHERE id=? AND archived=0`, id).Scan(&code, &builtin); err != nil {
+	if err := tx.QueryRowContext(r.Context(), `SELECT code,is_builtin FROM currencies WHERE id=? AND archived=0`, id).Scan(&code, &builtin); err != nil {
 		notFoundOrFail(a, w, err)
 		return
 	}
@@ -282,19 +324,37 @@ func (a *application) deleteCurrency(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "기본 통화는 삭제할 수 없어요"})
 		return
 	}
-	var used int
-	if err := a.db.QueryRow(`SELECT (SELECT COUNT(*) FROM subscriptions WHERE currency=?)+(SELECT COUNT(*) FROM subscription_price_history WHERE currency=?)+(SELECT COUNT(*) FROM users WHERE currency=?)`, code, code, code).Scan(&used); err != nil {
+	var defaultCurrency bool
+	if err := tx.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM users WHERE currency=?)`, code).Scan(&defaultCurrency); err != nil {
+		a.fail(w, err)
+		return
+	}
+	if defaultCurrency {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "기본 통화를 먼저 변경해 주세요"})
+		return
+	}
+	// Currency references also exist outside the current subscription price.
+	var used bool
+	if err := tx.QueryRowContext(r.Context(), `SELECT
+		EXISTS(SELECT 1 FROM subscriptions WHERE currency=?) OR
+		EXISTS(SELECT 1 FROM subscription_price_history WHERE currency=?) OR
+		EXISTS(SELECT 1 FROM subscription_occurrences WHERE currency=?) OR
+		EXISTS(SELECT 1 FROM activity_events WHERE old_currency=? OR new_currency=?) OR
+		EXISTS(SELECT 1 FROM services WHERE default_currency=?)`, code, code, code, code, code, code).Scan(&used); err != nil {
 		a.fail(w, err)
 		return
 	}
 	var res sql.Result
-	var err error
-	if used > 0 {
-		res, err = a.db.Exec(`UPDATE currencies SET archived=1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND is_builtin=0`, id)
+	if used {
+		res, err = tx.ExecContext(r.Context(), `UPDATE currencies SET archived=1,updated_at=CURRENT_TIMESTAMP WHERE id=?`, id)
 	} else {
-		res, err = a.db.Exec(`DELETE FROM currencies WHERE id=? AND is_builtin=0`, id)
+		res, err = tx.ExecContext(r.Context(), `DELETE FROM currencies WHERE id=?`, id)
 	}
 	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
 		a.fail(w, err)
 		return
 	}

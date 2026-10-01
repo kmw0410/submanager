@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 ARG GO_VERSION=1.26
 ARG ALPINE_VERSION=3.22
 
@@ -7,7 +8,8 @@ WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=1 go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/submanager .
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=1 go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/submanager .
 
 FROM alpine:${ALPINE_VERSION} AS runtime
 RUN apk add --no-cache ca-certificates tzdata && addgroup -S submanager && adduser -S -G submanager submanager

@@ -262,7 +262,7 @@ func (a *application) testNotification(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		body, _ := json.Marshal(discordWebhookPayload(notification.plainText()))
-		req, err = http.NewRequest(http.MethodPost, discord, strings.NewReader(string(body)))
+		req, err = http.NewRequestWithContext(r.Context(), http.MethodPost, discord, strings.NewReader(string(body)))
 	} else if v.Channel == "telegram" {
 		if token == "" || chat == "" {
 			bad(w, "Telegram Bot Token과 Chat ID를 입력해 주세요")
@@ -274,7 +274,7 @@ func (a *application) testNotification(w http.ResponseWriter, r *http.Request) {
 		}
 		endpoint := "https://api.telegram.org/bot" + token + "/sendMessage"
 		body, _ := json.Marshal(telegramPayload(chat, notification))
-		req, err = http.NewRequest(http.MethodPost, endpoint, strings.NewReader(string(body)))
+		req, err = http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, strings.NewReader(string(body)))
 	} else {
 		bad(w, "알림 채널을 확인해 주세요")
 		return
@@ -290,8 +290,8 @@ func (a *application) testNotification(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
 	if resp.StatusCode >= 300 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 500))
 		bad(w, "알림 서비스가 요청을 거절했어요")
 		return
 	}
@@ -363,49 +363,63 @@ func (a *application) notificationLoop(ctx context.Context) {
 }
 
 func (a *application) runScheduledNotifications() {
+	a.runScheduledNotificationsAt(time.Now().In(a.location))
+}
+
+func (a *application) runScheduledNotificationsAt(now time.Time) {
 	var upcoming bool
 	var days int
 	if err := a.db.QueryRow(`SELECT notify_upcoming,days_before FROM notification_rules WHERE id=1`).Scan(&upcoming, &days); err != nil {
 		log.Printf("notification rules: %v", err)
 		return
 	}
-	if !upcoming {
+	if !upcoming || days < 0 || days > 30 {
 		return
 	}
-
-	now := time.Now().In(a.location)
+	now = now.In(a.location)
+	due := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, a.location).AddDate(0, 0, days)
+	// Historical projections include cancelled subscriptions, but reminders
+	// must only describe subscriptions that are still active.
 	subs, err := a.loadSubscriptions()
 	if err != nil {
 		log.Printf("upcoming notifications: %v", err)
 		return
 	}
-
+	active := subs[:0]
+	for _, sub := range subs {
+		if sub.Status == "active" {
+			active = append(active, sub)
+		}
+	}
+	history, err := a.loadSubscriptionPriceHistory()
+	if err != nil {
+		log.Printf("upcoming notifications: %v", err)
+		return
+	}
+	period := due.Format("2006-01")
+	projection, err := a.loadPaymentProjection(period, period, active, history)
+	if err != nil {
+		log.Printf("upcoming notifications: %v", err)
+		return
+	}
+	month, err := projection.month(period, a.location)
+	if err != nil {
+		log.Printf("upcoming notifications: %v", err)
+		return
+	}
+	dueDate := due.Format("2006-01-02")
 	items := make([]string, 0)
-	dueDate := ""
-	for _, s := range subs {
-		if s.Status != "active" || s.Skipped {
+	for _, occurrence := range month.Items {
+		if occurrence.Skipped || occurrence.ScheduledDate != dueDate {
 			continue
 		}
-		due := nextPayment(now, s.BillingDay, s.BillingCycle, s.BillingDate)
-		d, err := time.ParseInLocation("2006-01-02", due, a.location)
-		if err != nil {
-			continue
-		}
-		remaining := int(d.Sub(time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, a.location)).Hours() / 24)
-		if remaining != days {
-			continue
-		}
-		items = append(items, upcomingNotificationItem(s.ServiceName, s.Amount, s.Currency))
-		dueDate = due
+		items = append(items, upcomingNotificationItem(occurrence.ServiceName, occurrence.Amount, occurrence.Currency))
 	}
 	if len(items) == 0 {
 		return
 	}
-
 	sort.Strings(items)
-	notification := upcomingNotification{Days: days, Items: items}
-	key := "upcoming:" + dueDate + ":" + strconv.Itoa(days)
-	a.deliverOnce(key, notification)
+	a.deliverOnce("upcoming:"+dueDate+":"+strconv.Itoa(days), upcomingNotification{Days: days, Items: items})
 }
 
 func upcomingNotificationItem(serviceName string, amount int64, currency string) string {
@@ -414,7 +428,6 @@ func upcomingNotificationItem(serviceName string, amount int64, currency string)
 
 // Change and monthly-summary notifications are intentionally disabled.
 // Discord, Telegram, and PWA push only receive grouped upcoming-payment notifications.
-func (a *application) notifyChange(_ string) {}
 
 func (a *application) deliverOnce(key string, notification upcomingNotification) {
 	res, err := a.db.Exec(`INSERT OR IGNORE INTO notification_deliveries(delivery_key) VALUES(?)`, key)
@@ -497,6 +510,10 @@ func (a *application) sendPWANotification(notification upcomingNotification) (in
 		}
 		subscriptions = append(subscriptions, subscription)
 	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
 	if err = rows.Close(); err != nil {
 		return 0, err
 	}
@@ -566,7 +583,7 @@ func (a *application) sendConfigured(notification upcomingNotification) error {
 				if resp.StatusCode < 300 {
 					sent++
 				} else {
-					lastErr = errors.New("discord returned " + resp.Status)
+					lastErr = errors.New("Discord returned status " + strconv.Itoa(resp.StatusCode))
 				}
 			} else {
 				lastErr = errors.New("Discord notification request failed")
@@ -595,7 +612,7 @@ func (a *application) sendConfigured(notification upcomingNotification) error {
 				if resp.StatusCode < 300 {
 					sent++
 				} else {
-					lastErr = errors.New("telegram returned " + resp.Status)
+					lastErr = errors.New("Telegram returned status " + strconv.Itoa(resp.StatusCode))
 				}
 			} else {
 				lastErr = errors.New("Telegram notification request failed")

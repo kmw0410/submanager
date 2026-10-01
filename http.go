@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -16,12 +17,36 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
-	if err := d.Decode(v); err != nil {
+	if err := decodeJSONDocument(d, v); err != nil {
 		bad(w, "입력 내용을 확인해 주세요")
 		return false
 	}
 	return true
 }
+
+// decodeJSONDocument accepts exactly one JSON value, including trailing whitespace.
+func decodeJSONDocument(d *json.Decoder, v any) error {
+	if err := d.Decode(&v); err != nil {
+		return err
+	}
+	if v == nil {
+		return errors.New("null JSON document")
+	}
+	var extra any
+	if err := d.Decode(&extra); err != io.EOF {
+		return errors.New("invalid trailing JSON")
+	}
+	return nil
+}
+
+// storedDate accepts the date prefix of SQLite timestamps without slicing malformed values.
+func storedDate(value string, loc *time.Location) (time.Time, error) {
+	if len(value) < 10 {
+		return time.Time{}, errors.New("invalid stored date")
+	}
+	return time.ParseInLocation("2006-01-02", value[:10], loc)
+}
+
 func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id < 1 {
@@ -69,30 +94,27 @@ func parsePeriod(p string) (int, time.Month, error) {
 	return t.Year(), t.Month(), e
 }
 func nextPayment(now time.Time, day int, cycle, startedAt string) string {
-	month := now.Month()
-	var anchor time.Time
-	if len(startedAt) >= 10 {
-		anchor, _ = time.ParseInLocation("2006-01-02", startedAt[:10], now.Location())
-	}
-	if cycle == "yearly" && !anchor.IsZero() {
-		if started, err := time.ParseInLocation("2006-01-02", startedAt[:10], now.Location()); err == nil {
-			month = started.Month()
-		}
-	}
-	last := time.Date(now.Year(), month+1, 0, 0, 0, 0, 0, now.Location()).Day()
-	candidate := time.Date(now.Year(), month, min(day, last), 0, 0, 0, 0, now.Location())
-	if !anchor.IsZero() && candidate.Before(anchor) {
-		candidate = anchor
-	}
+	anchor, _ := storedDate(startedAt, now.Location())
+	target := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	for candidate.Before(today) {
+	if cycle == "yearly" && !anchor.IsZero() {
+		target = time.Date(now.Year(), anchor.Month(), 1, 0, 0, 0, 0, now.Location())
+	}
+	if !anchor.IsZero() && target.Before(time.Date(anchor.Year(), anchor.Month(), 1, 0, 0, 0, 0, now.Location())) {
+		target = time.Date(anchor.Year(), anchor.Month(), 1, 0, 0, 0, 0, now.Location())
+	}
+	for {
+		last := time.Date(target.Year(), target.Month()+1, 0, 0, 0, 0, 0, now.Location()).Day()
+		candidate := time.Date(target.Year(), target.Month(), min(max(day, 1), last), 0, 0, 0, 0, now.Location())
+		if !candidate.Before(today) && (anchor.IsZero() || !candidate.Before(anchor)) {
+			return candidate.Format("2006-01-02")
+		}
 		if cycle == "yearly" {
-			candidate = candidate.AddDate(1, 0, 0)
+			target = target.AddDate(1, 0, 0)
 		} else {
-			candidate = candidate.AddDate(0, 1, 0)
+			target = target.AddDate(0, 1, 0)
 		}
 	}
-	return candidate.Format("2006-01-02")
 }
 func initial(s string) string {
 	r := []rune(strings.TrimSpace(s))

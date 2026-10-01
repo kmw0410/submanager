@@ -1,7 +1,7 @@
-const CACHE_NAME = "submanager-static-v5";
+const CACHE_NAME = "submanager-static-v17";
 const STATIC_ASSETS = [
-  "/assets/app.css?v=20260911-pwa-install-copy",
-  "/assets/app.js?v=20260911-pwa-install-copy",
+  "/assets/app.css?v=20261001-subscriptions",
+  "/assets/app.js?v=20261001-subscriptions",
   "/manifest.webmanifest",
   "/icon.svg",
 ];

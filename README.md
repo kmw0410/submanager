@@ -29,7 +29,7 @@
 
 ## 기술 스택
 
-- Alpine Linux 3.22 + Go 1.26
+- Alpine Linux 3.24 + Go 1.27
 - SQLite
 - HTML, CSS, JS
 
@@ -89,7 +89,7 @@ Discord·Telegram·PWA 연동은 처음 실행할 때 모두 꺼져 있습니다
 
 ## 로컬에서 실행하기
 
-Go 1.26 이상과 CGO를 사용할 수 있는 C 컴파일러가 필요합니다. SQLite 드라이버가 CGO를 사용하므로 `CGO_ENABLED=0`으로 빌드할 수 없습니다.
+Go 1.27 이상과 CGO를 사용할 수 있는 C 컴파일러가 필요합니다. SQLite 드라이버가 CGO를 사용하므로 `CGO_ENABLED=0`으로 빌드할 수 없습니다.
 
 ```bash
 go mod download
